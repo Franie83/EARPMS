@@ -1,0 +1,67 @@
+
+openapi: 3.0.3
+info:
+  title: Edo SUBEB EARPMS API
+  version: 1.0.0
+  description: Production Flask REST API for EARPMS.
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      responses: {200: {description: Healthy}}
+  /auth/login:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/Login'}}}
+      responses: {200: {description: Authenticated}, 401: {description: Invalid credentials}}
+  /auth/me:
+    get: {responses: {200: {description: Current user}}}
+  /state:
+    get: {responses: {200: {description: Complete application state}}}
+  /{resource}:
+    get: {responses: {200: {description: Paginated resource collection}}}
+    post: {responses: {201: {description: Created}, 403: {description: Forbidden}}}
+  /{resource}/{id}:
+    get: {responses: {200: {description: Resource}}}
+    put: {responses: {200: {description: Updated}}}
+    delete: {responses: {200: {description: Deleted}}}
+  /examinations/{id}/generate-papers:
+    post: {responses: {200: {description: Candidate papers generated}}}
+  /examinations/{id}/submit-for-approval:
+    post: {responses: {200: {description: Submitted}}}
+  /examinations/{id}/review:
+    post: {responses: {200: {description: Review recorded}}}
+  /examinations/{id}/finalize-results:
+    post: {responses: {200: {description: Results finalized}}}
+  /answer-scripts/intake:
+    post: {responses: {201: {description: Script created}}}
+  /answer-scripts/{id}/finalize:
+    post: {responses: {200: {description: Script finalized}}}
+  /report-cards/generate:
+    post: {responses: {201: {description: Report card generated}}}
+  /verify/report-card/{code}:
+    get:
+      security: []
+      responses: {200: {description: Verification result}, 404: {description: Invalid code}}
+  /gemini/evaluate-theory:
+    post: {responses: {200: {description: AI or deterministic evaluation}}}
+  /gemini/parse-exam-document:
+    post: {responses: {200: {description: Parsed examination}}}
+  /gemini/generate-marking-and-rubric:
+    post: {responses: {200: {description: Generated marking scheme}}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  schemas:
+    Login:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}

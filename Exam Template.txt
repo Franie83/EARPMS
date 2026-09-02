@@ -1,0 +1,109 @@
+Mathematics
+
+1. What is the value of 5! (5 factorial)?
+A. 20
+B. 60
+C. 120
+D. 240
+[Answer: C, Marks: 10]
+
+2. Solve the simultaneous equations: 2x + y = 7 and x - y = 2. Find the values of x and y.
+[Answer: x = 3, y = 1. (2(3) + 1 = 7, 3 - 1 = 2)]
+[Marks: 20]
+[Lines: 6]
+
+3. What is the probability of rolling an even number on a standard six-sided die?
+A. 1/2
+B. 1/3
+C. 1/6
+D. 2/3
+[Answer: A, Marks: 10]
+
+4. Calculate the compound interest on N10,000 for 2 years at 5% per annum. (Show your workings.)
+[Answer: Interest Year 1 = 5% of 10,000 = 500; Amount Year 1 = 10,500. Interest Year 2 = 5% of 10,500 = 525; Total Interest = 500 + 525 = N1,025. Total Amount = N11,025.]
+[Marks: 25]
+[Lines: 8]
+
+
+
+English Language
+
+1. Choose the word that is most nearly opposite in meaning to “BENEVOLENT”.
+A. Kind
+B. Cruel
+C. Generous
+D. Gentle
+[Answer: B, Marks: 10]
+
+2. Which sentence is grammatically correct?
+A. He don't know
+B. He doesn't know
+C. He doesn't knows
+D. He don't knows
+[Answer: B, Marks: 10]
+
+3. Write a short paragraph (approximately 100 words) on “The Importance of Education in Nigeria”.
+[Answer: Education is the foundation of national development. It empowers individuals with knowledge, skills, and values that drive economic growth and social progress. In Nigeria, education reduces poverty, promotes civic participation, and fosters innovation. It unlocks opportunities for youth and builds a skilled workforce necessary for a diversified economy. Every child deserves access to quality education as a fundamental right and a pathway to a brighter future.]
+[Marks: 30]
+[Lines: 12]
+
+4. Identify the figure of speech in the sentence: “The wind whispered through the trees.” Explain your answer.
+[Answer: The figure of speech is personification – the wind is given the human quality of whispering, suggesting a soft, gentle sound.]
+[Marks: 20]
+[Lines: 4]
+
+
+Biology
+
+1. Which of the following is a non-renewable resource?
+A. Sunlight
+B. Crude oil
+C. Wind
+D. Water
+[Answer: B, Marks: 10]
+
+2. Which organelle is known as the “powerhouse of the cell”?
+A. Nucleus
+B. Ribosome
+C. Mitochondria
+D. Golgi body
+[Answer: C, Marks: 10]
+
+3. Name and explain three functions of the human skeleton.
+[Answer: 1. Support – Provides a framework that supports the body and maintains its shape. 2. Protection – Protects vital organs such as the brain (skull), heart and lungs (ribcage). 3. Movement – Acts as levers for muscles to pull against, enabling locomotion and manipulation.]
+[Marks: 20]
+[Lines: 6]
+
+4. Describe the process of photosynthesis, including the raw materials and products.
+[Answer: Photosynthesis is the process by which green plants use sunlight to synthesise food from carbon dioxide and water. Raw materials: Carbon dioxide (CO₂), Water (H₂O), and Sunlight (energy). Products: Glucose (C₆H₁₂O₆) and Oxygen (O₂). The equation is: 6CO₂ + 6H₂O + light energy → C₆H₁₂O₆ + 6O₂. It occurs in the chloroplasts, which contain chlorophyll.]
+[Marks: 25]
+[Lines: 8]
+
+Pure Mathematics Objective questions
+1. What is 2 + 3?
+A. 4
+B. 5
+C. 6
+D. 7
+[Answer: B, Marks: 10]
+
+2. What is 5 - 2?
+A. 1
+B. 2
+C. 3
+D. 4
+[Answer: C, Marks: 10]
+
+3. What is 2 × 3?
+A. 4
+B. 5
+C. 6
+D. 7
+[Answer: C, Marks: 10]
+
+4. What is 5 + 4 - 2?
+A. 5
+B. 6
+C. 7
+D. 8
+[Answer: C, Marks: 10]

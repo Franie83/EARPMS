@@ -1,0 +1,2 @@
+
+Flask-Migrate/Alembic migrations live here. Run `flask --app wsgi:app db upgrade` before starting production workers.

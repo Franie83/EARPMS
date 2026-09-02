@@ -1,0 +1,7 @@
+
+{
+  "name": "Edo State Ministry of Education EARPMS",
+  "description": "Edo State Ministry of Education Electronic Academic Records, Paper & Marking System featuring Question Bank, Versioned Marking Schemes, Rubrics, Personalized QR Exam Papers, AI Theory Marking, Examiner Approvals, and Result Finalization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

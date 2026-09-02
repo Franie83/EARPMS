@@ -1,0 +1,13 @@
+
+@import "tailwindcss";
+
+
+/* Reliable visible scrolling for tall application modals. */
+.earpms-modal-scroll {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+}
+.earpms-modal-scroll::-webkit-scrollbar { width: 10px; }
+.earpms-modal-scroll::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 999px; }
+.earpms-modal-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; border: 2px solid #e2e8f0; }
+.earpms-modal-scroll::-webkit-scrollbar-thumb:hover { background: #64748b; }

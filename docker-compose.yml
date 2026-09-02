@@ -1,0 +1,46 @@
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: earpms
+      POSTGRES_USER: earpms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U earpms -d earpms"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    environment:
+      FLASK_ENV: production
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY}
+      DATABASE_URL: postgresql+psycopg://earpms:${POSTGRES_PASSWORD}@db:5432/earpms
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?set DEMO_PASSWORD}
+      DEMO_MODE: "true"
+      AUTO_CREATE_DB: "false"
+      SEED_ON_STARTUP: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
