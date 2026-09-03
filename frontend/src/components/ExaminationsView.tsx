@@ -1475,6 +1475,20 @@ export const ExaminationsView: React.FC<ExaminationsViewProps> = ({
                     <QrCode className="w-4 h-4" />
                     <span>Regenerate Papers for Enrolled Pupils</span>
                   </button>
+
+                  {/* NEW: Sync CBT Scripts Button */}
+                  <button
+                    onClick={() => {
+                      if (!selectedExam) return;
+                      const res = store.syncCbtScripts(selectedExam.id);
+                      alert(res.message);
+                      onRefresh();
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Sync CBT Scripts</span>
+                  </button>
                 </div>
               </div>
 

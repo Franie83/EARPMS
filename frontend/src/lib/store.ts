@@ -1234,6 +1234,88 @@ class Store {
     };
   }
 
+  // ==========================================
+  // SYNC CBT SCRIPTS – NEW METHOD
+  // ==========================================
+  public syncCbtScripts(examId: string): { success: boolean; message: string; count: number } {
+    const exam = this.state.examinations.find(e => e.id === examId);
+    if (!exam) return { success: false, message: 'Exam not found.', count: 0 };
+
+    const papers = this.state.studentPapers.filter(p => p.examination_id === examId && (p.cbt_status === 'submitted' || p.cbt_status === 'graded'));
+    let created = 0;
+
+    for (const paper of papers) {
+      // Check if a script already exists
+      const existing = this.state.answerScripts.find(s => s.paper_id === paper.id);
+      if (existing) continue;
+
+      // Build a script from the paper's cbt_answers
+      const questions = this.state.questions.filter(q => q.examination_id === examId);
+      const assignedIds = paper.assigned_question_ids?.length ? paper.assigned_question_ids : questions.map(q => q.id);
+      const qMap = new Map(questions.map(q => [q.id, q]));
+
+      const answers: ScriptAnswer[] = assignedIds
+        .map(id => {
+          const q = qMap.get(id);
+          if (!q) return null;
+          const response = paper.cbt_answers?.[id] || '';
+          let proposed = 0;
+          let status: 'finalized' | 'proposed' = 'finalized';
+          if (q.question_type === 'objective') {
+            if (response.toUpperCase() === (q.correct_answer || '').toUpperCase()) {
+              proposed = q.maximum_marks;
+            }
+          } else {
+            if (response.trim()) {
+              proposed = Math.min(q.maximum_marks, Math.round((response.length / 20) * q.maximum_marks));
+              status = 'proposed';
+            }
+          }
+          return {
+            id: `sync-${paper.id}-${q.id}`,
+            script_id: `sync-${paper.id}`,
+            question_id: q.id,
+            student_raw_response: response,
+            detected_mcq_choice: q.question_type === 'objective' ? response.toUpperCase().slice(0, 1) : undefined,
+            proposed_score: proposed,
+            confidence: q.question_type === 'objective' ? 1.0 : 0.88,
+            final_score: q.question_type === 'objective' ? proposed : undefined,
+            status: status,
+            evidence: '',
+            reasoning: ''
+          };
+        })
+        .filter((a): a is ScriptAnswer => a !== null);
+
+      if (answers.length === 0) continue;
+
+      const total = answers.reduce((sum, a) => sum + (a.final_score !== undefined ? a.final_score : a.proposed_score || 0), 0);
+      const script: AnswerScript = {
+        id: `sync-${paper.id}`,
+        paper_id: paper.id,
+        examination_id: examId,
+        student_id: paper.student_id,
+        intake_type: 'digital',
+        status: 'marked',
+        review_status: 'pending_review', // so it appears in the queue
+        score: total,
+        maximum_marks: exam.maximum_marks,
+        answers: answers,
+        created_at: new Date().toISOString()
+      };
+      this.state.answerScripts.push(script);
+      created++;
+    }
+
+    if (created > 0) {
+      this.recordAudit('SYNC', 'cbt-scripts', examId, undefined, { count: created });
+      this.save();
+      return { success: true, message: `Created ${created} script(s) from CBT submissions.`, count: created };
+    } else {
+      return { success: true, message: 'No CBT submissions without scripts found.', count: 0 };
+    }
+  }
+
   // End-to-End One-Document Import & Pipeline Generator
   public importAndGenerateCompleteExamPipeline(params: {
     examId?: string;
@@ -2473,18 +2555,28 @@ class Store {
     return { success: true, message: `Report card created successfully (Code: ${verificationCode})`, reportCard: newCard };
   }
 
-  public deleteReportCard(id: string): { success: boolean; message: string } {
-    const existing = this.state.reportCards.find(rc => rc.id === id);
-    if (!existing) return { success: false, message: 'Report card not found.' };
+  public async deleteReportCard(id: string): Promise<{ success: boolean; message: string }> {
+  const existing = this.state.reportCards.find(rc => rc.id === id);
+  if (!existing) return { success: false, message: 'Report card not found.' };
 
-    this.state.reportCards = this.state.reportCards.filter(rc => rc.id !== id);
-    if (!this.pendingDeletes.has('report-cards')) this.pendingDeletes.set('report-cards', new Set());
-    this.pendingDeletes.get('report-cards')!.add(id);
-    this.recordAudit('DELETE', 'report-card', id, existing);
-    this.save();
-    return { success: true, message: 'Report card deleted from active records.' };
+  // Remove from local state immediately for UI responsiveness
+  this.state.reportCards = this.state.reportCards.filter(rc => rc.id !== id);
+  
+  // Queue the deletion for server sync
+  if (!this.pendingDeletes.has('report-cards')) {
+    this.pendingDeletes.set('report-cards', new Set());
   }
+  this.pendingDeletes.get('report-cards')!.add(id);
+  
+  // Record audit and save
+  this.recordAudit('DELETE', 'report-card', id, existing);
+  this.save();
 
+  // Wait for the server sync to complete (sends DELETE + PUT /state)
+  await this.flush();
+
+  return { success: true, message: 'Report card permanently deleted.' };
+}
   // ==========================================
   // STUDENT MANAGEMENT & REGISTRY METHODS
   // ==========================================

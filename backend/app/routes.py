@@ -1132,20 +1132,28 @@ def ai_parse():
             m=re.match(r'^(\d+)[\.\)]\s+(.*)$',line)
             if m:
                 if cur: questions.append(cur)
-                cur={'question_number':int(m.group(1)),'question_type':'theory','text':m.group(2),'options':[],'maximum_marks':10}
+                # Default maximum_marks is 0 so missing marks show as 0
+                cur={'question_number':int(m.group(1)),'question_type':'theory','text':m.group(2),'options':[],'maximum_marks':0}
                 continue
             if cur:
                 om=re.match(r'^([A-D])[\.\)]\s*(.*)$',line)
                 if om: cur['options'].append({'key':om.group(1),'text':om.group(2)}); cur['question_type']='objective'; continue
-                am=re.search(r'\[Answer\s*:\s*([^\],]+)',line,re.I)
-                mm=re.search(r'\[Marks\s*:\s*(\d+(?:\.\d+)?)\]',line,re.I)
-                lm=re.search(r'\[Lines\s*:\s*(\d+)\]',line,re.I)
+                # More robust Answer capture: stops at comma or ]
+                am=re.search(r'\[Answer\s*:\s*([^,\]]+)',line,re.I)
+                # Marks: now handles both [Marks: 25] and Marks: 25, and = sign
+                mm=re.search(r'(?:\[)?Marks?\s*[:=]\s*(\d+(?:\.\d+)?)(?:\])?',line,re.I)
+                # Lines: now searches for "Lines: 2" anywhere in the line (no brackets required)
+                lm=re.search(r'Lines\s*:\s*(\d+)',line,re.I)
                 if am:
                     ans=am.group(1).strip()
-                    if len(ans)<=3 and ans.upper() in {'A','B','C','D'}: cur['correct_answer']=ans.upper()
-                    else: cur['expected_answer']=ans
-                if mm: cur['maximum_marks']=float(mm.group(1))
-                if lm: cur['answer_lines']=int(lm.group(1))
+                    if len(ans)<=3 and ans.upper() in {'A','B','C','D'}:
+                        cur['correct_answer']=ans.upper()
+                    else:
+                        cur['expected_answer']=ans
+                if mm:
+                    cur['maximum_marks']=float(mm.group(1))
+                if lm:
+                    cur['answer_lines']=int(lm.group(1))
                 if line.startswith('[Explanation:') or line.startswith('[Model Answer:'):
                     cur['expected_answer']=re.sub(r'^\[[^:]+:\s*|\]$','',line).strip()
         if cur: questions.append(cur)

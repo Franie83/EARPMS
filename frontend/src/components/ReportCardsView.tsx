@@ -316,21 +316,24 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
     onRefresh();
   };
 
-  const handleDeleteReportCard = () => {
-    if (!activeCard) return;
-    if (currentUser.role !== 'super-admin') {
-      alert('Only Super-Admin can delete report cards.');
-      return;
-    }
-    if (!window.confirm(`Delete the report card for ${student?.full_name || 'this candidate'}? This action cannot be undone.`)) return;
-    const result = store.deleteReportCard(activeCard.id);
-    if (!result.success) {
-      alert(result.message);
-      return;
-    }
+  const handleDeleteReportCard = async () => {
+  if (!activeCard) return;
+  if (currentUser.role !== 'super-admin') {
+    alert('Only Super-Admin can delete report cards.');
+    return;
+  }
+  if (!window.confirm(`Delete the report card for ${student?.full_name || 'this candidate'}? This action cannot be undone.`)) return;
+  
+  try {
+    const result = await store.deleteReportCard(activeCard.id);
     alert(result.message);
-    onRefresh();
-  };
+    if (result.success) {
+      onRefresh(); // refresh after successful deletion
+    }
+  } catch (error: any) {
+    alert('Deletion failed: ' + error.message);
+  }
+};
 
   // Single PDF Download Handler
   const handleDownloadPdf = async () => {
