@@ -110,16 +110,91 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
   const [overrideScores, setOverrideScores] = useState<{ [answerId: string]: number }>({});
   const [overrideReasons, setOverrideReasons] = useState<{ [answerId: string]: string }>({});
 
+  // ---- Helper to get script for a paper (real or virtual for CBT) ----
+  const getScriptForPaper = (paper: any, exam: Examination | undefined, allQuestions: Question[]): AnswerScript | null => {
+    if (!exam) return null;
+    // First, try to find a real script
+    const realScript = answerScripts.find(s => s.paper_id === paper.id);
+    if (realScript) return realScript;
+
+    // If paper has CBT submission but no script, build a virtual one
+    if ((paper.cbt_status === 'submitted' || paper.cbt_status === 'graded') && paper.cbt_answers) {
+      const assignedIds = paper.assigned_question_ids?.length
+        ? paper.assigned_question_ids
+        : allQuestions.map(q => q.id);
+      const qMap = new Map(allQuestions.map(q => [q.id, q]));
+      const assignedQuestions = assignedIds.map(id => qMap.get(id)).filter((q): q is Question => Boolean(q));
+
+      const answers: ScriptAnswer[] = assignedQuestions.map(q => {
+        const response = paper.cbt_answers[q.id] || '';
+        let proposed = 0;
+        let status: 'finalized' | 'proposed' = 'finalized';
+        if (q.question_type === 'objective') {
+          if (response.toUpperCase() === (q.correct_answer || '').toUpperCase()) {
+            proposed = q.maximum_marks;
+          }
+        } else {
+          // For theory, if answered, give a provisional score (matching deterministic logic)
+          if (response.trim()) {
+            proposed = Math.min(q.maximum_marks, Math.round((response.length / 20) * q.maximum_marks));
+            status = 'proposed';
+          }
+        }
+        return {
+          id: `virtual-${paper.id}-${q.id}`,
+          script_id: `virtual-${paper.id}`,
+          question_id: q.id,
+          student_raw_response: response,
+          detected_mcq_choice: q.question_type === 'objective' ? response.toUpperCase().slice(0,1) : undefined,
+          proposed_score: proposed,
+          confidence: q.question_type === 'objective' ? 1.0 : 0.88,
+          final_score: q.question_type === 'objective' ? proposed : undefined,
+          status: status,
+          evidence: q.question_type === 'objective' ? 'CBT objective marked automatically.' : 'Provisional CBT score, pending examiner moderation.',
+          reasoning: ''
+        };
+      });
+
+      const total = answers.reduce((sum, a) => sum + (a.final_score !== undefined ? a.final_score : (a.proposed_score || 0)), 0);
+      const virtualScript: AnswerScript = {
+        id: `virtual-${paper.id}`,
+        paper_id: paper.id,
+        examination_id: exam.id,
+        student_id: paper.student_id,
+        intake_type: 'digital',
+        status: 'marked',
+        review_status: 'pending_review', // will be examiner_approved if no theory? but we'll keep pending to allow moderation
+        score: total,
+        maximum_marks: exam.maximum_marks,
+        answers: answers,
+        created_at: paper.cbt_submitted_at || new Date().toISOString(),
+        scanned_file_name: undefined,
+        scanned_file_data: undefined,
+        scanned_file_type: undefined,
+        scanned_file_size_bytes: undefined,
+        finalized_at: undefined,
+        finalized_by: undefined,
+        revisions: undefined
+      };
+      // If all questions are objective, we could mark as examiner_approved, but keep as pending for consistency
+      return virtualScript;
+    }
+    return null;
+  };
+
   // Every generated candidate paper remains visible until its script is approved.
-  // Candidates without an uploaded script can be opened directly in the intake workflow.
   const candidateQueue = studentPapers
     .filter(p => !selectedExamId || p.examination_id === selectedExamId)
     .filter(p => p.status !== 'enrolled')
-    .map(p => ({
-      paper: p,
-      script: answerScripts.find(s => s.paper_id === p.id),
-      student: students.find(st => st.id === p.student_id)
-    }))
+    .map(p => {
+      const exam = examinations.find(e => e.id === p.examination_id);
+      const script = getScriptForPaper(p, exam, questions);
+      return {
+        paper: p,
+        script,
+        student: students.find(st => st.id === p.student_id)
+      };
+    })
     .filter(item => !item.script || item.script.review_status !== 'examiner_approved');
 
   // Auto-select the first pending script. If there are only unuploaded papers, leave the
@@ -339,6 +414,17 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
       alert('This pupil has no generated candidate paper for the selected examination. Enroll the pupil and generate the candidate paper first.');
       return;
     }
+    // Check if there's already a script (real or virtual) for this paper
+    const existing = getScriptForPaper(paper, examinations.find(e => e.id === selectedExamId), questions);
+    if (existing) {
+      if (existing.review_status === 'examiner_approved') {
+        alert('This candidate already has an examiner-approved script. You cannot replace it.');
+      } else {
+        alert('This candidate already has a pending script (including CBT submission). You can update it by editing the existing script.');
+      }
+      return;
+    }
+
     const paperId = paper.id;
     const rawAnswers = intakeQuestions.map(q => ({
       question_id: q.id,
@@ -437,6 +523,12 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
         failCount++;
         continue;
       }
+      // Check if script already exists (real or virtual)
+      const existing = getScriptForPaper(paper, examinations.find(e => e.id === selectedExamId), questions);
+      if (existing) {
+        failCount++;
+        continue;
+      }
       // Read file as data URL
       const reader = new FileReader();
       const dataUrl = await new Promise<string>((resolve) => {
@@ -475,6 +567,10 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
 
   // Individual Delete
   const handleDeleteScript = (scriptId: string) => {
+    if (scriptId.startsWith('virtual-')) {
+      alert('Cannot delete a virtual CBT script. The student has submitted the exam; you can reset the paper status in the examination workspace.');
+      return;
+    }
     if (!confirm('Delete this answer script? This cannot be undone.')) return;
     const res = store.deleteAnswerScript(scriptId);
     alert(res.message);
@@ -560,6 +656,13 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
                 alert('No generated candidate papers exist for this examination. Generate/enroll candidate papers first.');
                 return;
               }
+              // Check if paper already has a script (real or virtual)
+              const exam = examinations.find(e => e.id === selectedExamId);
+              const existing = getScriptForPaper(firstPaper, exam, questions);
+              if (existing) {
+                alert('This candidate already has a script (including CBT submission). You can edit the existing script.');
+                return;
+              }
               setIntakeStudentId(firstPaper.student_id);
               setUploadedPdfFile(null);
               setIntakeResponses({});
@@ -632,6 +735,7 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
                 const sch = schools.find(sc => sc.id === stu?.school_id);
                 const isSelected = !!script && activeScript?.id === script.id;
                 const submitted = paper.cbt_status === 'submitted' || paper.cbt_status === 'graded';
+                const isVirtual = script?.id?.startsWith('virtual-');
 
                 return (
                   <div
@@ -645,7 +749,7 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-start gap-2 min-w-0">
-                        {script && script.review_status !== 'examiner_approved' && (
+                        {script && script.review_status !== 'examiner_approved' && !isVirtual && (
                           <input
                             type="checkbox"
                             checked={selectedBulkScriptIds.includes(script.id)}
@@ -667,6 +771,9 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
                           </h4>
                           {script?.scanned_file_name && (
                             <span className="px-1.5 py-0.2 bg-rose-100 text-rose-700 text-[9px] font-black rounded uppercase">PDF</span>
+                          )}
+                          {isVirtual && (
+                            <span className="px-1.5 py-0.2 bg-blue-100 text-blue-700 text-[9px] font-black rounded uppercase">CBT</span>
                           )}
                         </div>
                         <p className="text-[11px] text-slate-500 font-mono">{stu?.admission_number}</p>
@@ -691,7 +798,7 @@ export const AssessmentView: React.FC<AssessmentViewProps> = ({
                             {script?.review_status === 'examiner_approved' ? 'Moderated' : submitted ? 'Submitted' : 'Not Submitted'}
                           </span>
 
-                          {script && (
+                          {script && !isVirtual && (
                             <>
                               <button
                                 type="button"

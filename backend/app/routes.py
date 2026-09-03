@@ -46,6 +46,31 @@ def current_user():
     r=get('users', get_jwt_identity())
     return r.payload if r else {}
 
+def _exam_for_resource(item):
+    """Resolve the owning examination for an academic child resource."""
+    if not item: return None
+    if item.get('examination_id'): return payload('examinations', item.get('examination_id'))
+    if item.get('paper_id'):
+        paper=payload('student-papers', item.get('paper_id'))
+        return payload('examinations', paper.get('examination_id')) if paper else None
+    if item.get('script_id'):
+        script=payload('answer-scripts', item.get('script_id'))
+        return payload('examinations', script.get('examination_id')) if script else None
+    return None
+
+def _school_authorized_for_exam(exam, user):
+    if not exam: return False
+    role=user.get('role')
+    if role in {'super-admin','director'}: return True
+    return bool(user.get('school_id')) and (not exam.get('school_id') or str(exam.get('school_id'))==str(user.get('school_id')))
+
+def _marking_actor_authorized(script, user):
+    role=user.get('role')
+    if role in {'super-admin','director'}: return True
+    if role != 'teacher': return False
+    exam=payload('examinations', script.get('examination_id'))
+    return _school_authorized_for_exam(exam,user) and school_visible(script,user)
+
 def state_revision():
     # A compact server fingerprint used to reject stale browser snapshots.
     # This is intentionally based on database metadata rather than client data.
@@ -181,12 +206,24 @@ def replace_state():
                     continue
                 if old:
                     # Finalized academic records and locked marking artifacts are immutable even through /state.
-                    if resource == 'examinations' and old.payload.get('status') == 'finalized':
-                        continue
+                    # Super-Admin bypasses examination locks (edit any exam)
+                    if resource == 'examinations':
+                        if role != 'super-admin' and old.payload.get('status') in {'approved','finalized'}:
+                            continue
+                    if resource in {'questions','rubrics','marking-schemes'}:
+                        owner=_exam_for_resource(old.payload)
+                        if owner and owner.get('status') in {'approved','finalized'}:
+                            # Super-Admin can also edit these child items; skip only for non-SA
+                            if role != 'super-admin':
+                                continue
                     if resource == 'marking-schemes' and old.payload.get('status') == 'locked':
-                        continue
+                        # Super-Admin can edit locked marking schemes
+                        if role != 'super-admin':
+                            continue
                     if resource == 'results' and old.payload.get('status') == 'finalized':
-                        continue
+                        # Super-Admin can edit finalized results
+                        if role != 'super-admin':
+                            continue
                     # A submitted/graded CBT paper is immutable. This prevents a stale
                     # browser tab (or a second device) from silently reopening or
                     # replacing a candidate's submitted answers through /state sync.
@@ -292,14 +329,26 @@ def update_resource(resource,rid):
         if not get('schools', str(merged['school_id'])):
             return jsonify(error='Assigned school does not exist'), 400
     if resource == 'examinations':
-        if r.payload.get('status') == 'finalized':
-            return jsonify(error='Finalized examinations are locked and cannot be edited.'),409
+        # Only Super-Admin can edit any examination (including approved/finalized)
         if get_jwt().get('role') != 'super-admin':
-            return jsonify(error='Only Super-Admin may edit examinations.'),403
+            # Non-super-admin: block if approved or finalized
+            if r.payload.get('status') in {'approved','finalized'}:
+                return jsonify(error='Only Super-Admin can edit approved/finalized examinations.'),409
+        # No status check for Super-Admin
+    if resource in {'questions','marking-schemes','rubrics'}:
+        exam=_exam_for_resource(r.payload)
+        if exam and exam.get('status') in {'approved','finalized'}:
+            # Non-super-admin: block; Super-Admin is allowed
+            if get_jwt().get('role') != 'super-admin':
+                return jsonify(error='Academic content is locked after Principal approval. Request changes before editing.'),409
     if resource == 'marking-schemes' and r.payload.get('status') == 'locked':
-        return jsonify(error='Locked marking schemes are immutable.'),409
+        # Super-Admin can edit locked marking schemes
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Locked marking schemes are immutable.'),409
     if resource == 'results' and r.payload.get('status') == 'finalized':
-        return jsonify(error='Finalized results are immutable.'),409
+        # Super-Admin can edit finalized results
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Finalized results are immutable.'),409
     put(resource,merged,rid)
     audit(get('users',get_jwt_identity()).payload.get('username','system'),'UPDATE',resource,rid,old=old,new=merged,ip=request.remote_addr); db.session.commit(); return jsonify(merged)
 
@@ -313,15 +362,22 @@ def delete_resource(resource,rid):
     if role not in WRITE_ROLES.get(resource,set()) or not school_visible(r.payload, user):
         return jsonify(error='Forbidden'),403
     old=r.payload.copy()
+    if resource in {'questions','rubrics','marking-schemes'}:
+        owner=_exam_for_resource(r.payload)
+        if owner and owner.get('status') in {'approved','finalized'}:
+            # Non-super-admin: block; Super-Admin can delete
+            if role != 'super-admin':
+                return jsonify(error='Academic content is locked after Principal approval.'),409
     if resource == 'examinations':
-        # Check if there are finalized results for this examination
-        has_finalized = any(x.payload.get('examination_id') == rid and x.payload.get('status') == 'finalized' for x in rows('results'))
-        if has_finalized:
-            # Allow super-admin to force delete only with explicit confirmation
-            force = request.args.get('force', '').lower() == 'true'
-            if not force or role != 'super-admin':
-                return jsonify(error='Cannot delete a finalized examination; finalized results are immutable. Use ?force=true only if you are Super-Admin and understand the consequences.'),409
-        # Cascade delete all child resources (even if finalized, because super-admin overrode)
+        # Super-Admin can delete any examination, no force needed
+        if role != 'super-admin':
+            # Non-super-admin: check if approved or finalized
+            if r.payload.get('status') == 'approved':
+                return jsonify(error='Approved examinations cannot be deleted.'),409
+            has_finalized = any(x.payload.get('examination_id') == rid and x.payload.get('status') == 'finalized' for x in rows('results'))
+            if has_finalized:
+                return jsonify(error='Cannot delete a finalized examination; finalized results are immutable.'),409
+        # Super-Admin proceeds; cascade delete children
         for child_resource in ('questions','marking-schemes','rubrics','student-papers','answer-scripts','results'):
             for child in list(rows(child_resource)):
                 if child.payload.get('examination_id') == rid:
@@ -415,11 +471,23 @@ def verify_question(exam_id,question_id):
     q=get('questions',question_id)
     if not q or q.payload.get('examination_id')!=exam_id:return jsonify(error='Question not found'),404
     if get_jwt().get('role') not in WRITE_ROLES['questions'] or not school_visible(q.payload,current_user()):return jsonify(error='Forbidden'),403
+    exam=payload('examinations',exam_id)
+    if exam and exam.get('status') in {'approved','finalized'}:
+        # Super-Admin can verify even after approval
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Questions are locked after Principal approval.'),409
     q.payload['verified']=bool((request.get_json(silent=True) or {}).get('verified',True)); flag_modified(q, 'payload'); db.session.commit(); return jsonify(q.payload)
 
 @api.post('/examinations/<exam_id>/marking-schemes')
 @auth_required
 def create_scheme(exam_id):
+    exam=payload('examinations',exam_id)
+    if not exam:return jsonify(error='Examination not found'),404
+    if exam.get('status') in {'approved','finalized'}:
+        # Super-Admin can create scheme even after approval
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Marking scheme is locked after Principal approval.'),409
+    if not _school_authorized_for_exam(exam,current_user()): return jsonify(error='Forbidden'),403
     qs=sorted([x.payload for x in rows('questions') if x.payload.get('examination_id')==exam_id],key=lambda x:x.get('question_number',0))
     if not qs:return jsonify(error='No questions found'),400
     versions=[x.payload.get('version',0) for x in rows('marking-schemes') if x.payload.get('examination_id')==exam_id]
@@ -452,7 +520,10 @@ def lock_scheme(scheme_id):
 def enroll_exam_candidates(exam_id):
     exam=payload('examinations',exam_id)
     if not exam:return jsonify(error='Examination not found'),404
-    if exam.get('status')=='finalized':return jsonify(error='Finalized examinations are immutable.'),409
+    if exam.get('status')=='finalized':
+        # Super-Admin can enroll even if finalized? We'll allow it.
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Finalized examinations are immutable.'),409
     d=request.get_json(silent=True) or {}; ids=[str(x) for x in d.get('student_ids',[]) if x]
     if not ids:return jsonify(error='No students selected.'),400
     role=get_jwt().get('role'); user=current_user()
@@ -475,7 +546,14 @@ def enroll_exam_candidates(exam_id):
 def generate_papers(exam_id):
     exam=payload('examinations',exam_id)
     if not exam:return jsonify(error='Examination not found'),404
-    if exam.get('status') == 'finalized': return jsonify(error='Finalized examinations are immutable.'),409
+    if exam.get('status') == 'finalized':
+        # Super-Admin can generate even if finalized
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Finalized examinations are immutable.'),409
+    if exam.get('status') != 'approved' and get_jwt().get('role') not in ('super-admin', 'director'):
+        # Only Super-Admin and Director can generate if not approved
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Candidate papers can only be generated after Principal approval.'),409
     # Enrollment is explicit: only pre-enrolled candidate paper placeholders are eligible.
     enrolled=[r.payload for r in rows('student-papers') if r.payload.get('examination_id')==exam_id and r.payload.get('status')=='enrolled']
     qs=sorted([r.payload for r in rows('questions') if r.payload.get('examination_id')==exam_id],key=lambda q:q.get('question_number',0))
@@ -498,14 +576,56 @@ def generate_papers(exam_id):
 def submit_exam(exam_id):
     r=get('examinations',exam_id)
     if not r:return jsonify(error='Not found'),404
-    r.payload.update(status='submitted_for_approval',approval_status='pending',submitted_at=now(),submission_notes=(request.get_json(silent=True) or {}).get('notes','')); flag_modified(r,'payload'); db.session.commit(); return jsonify(r.payload)
+    if r.payload.get('status') in {'submitted_for_approval','approved','finalized'}:
+        return jsonify(error='This examination has already passed the submission gate.'),409
+    qs=[x.payload for x in rows('questions') if x.payload.get('examination_id')==exam_id]
+    schemes=[x.payload for x in rows('marking-schemes') if x.payload.get('examination_id')==exam_id and not x.payload.get('is_deleted') and not x.payload.get('is_hidden')]
+    rubrics=[x.payload for x in rows('rubrics') if x.payload.get('examination_id')==exam_id]
+    if not qs:return jsonify(error='Cannot submit an examination without questions.'),409
+    if any(not q.get('verified') for q in qs): return jsonify(error='All examination questions must be verified before Principal moderation.'),409
+    if not schemes:return jsonify(error='A marking scheme is required before Principal moderation.'),409
+    if not any(x.get('status') in {'approved','locked'} for x in schemes): return jsonify(error='The marking scheme must be approved before Principal moderation.'),409
+    if not rubrics:return jsonify(error='A rubric matrix is required before Principal moderation.'),409
+    r.payload.update(status='submitted_for_approval',approval_status='pending',submitted_at=now(),
+                     submission_notes=(request.get_json(silent=True) or {}).get('notes',''))
+    flag_modified(r,'payload'); db.session.commit(); return jsonify(r.payload)
 
 @api.post('/examinations/<exam_id>/review')
 @roles_required('super-admin','director','principal')
 def review_exam(exam_id):
-    data=request.get_json(silent=True) or {}; decision=data.get('decision'); r=get('examinations',exam_id)
-    if decision not in {'approved','changes_requested','rejected'} or not r:return jsonify(error='Invalid decision'),400
-    r.payload.update(approval_status=decision, status='approved' if decision=='approved' else decision, reviewed_by=get_jwt_identity(), reviewed_at=now(), principal_feedback=data.get('feedback','')); flag_modified(r,'payload'); db.session.commit(); return jsonify(r.payload)
+    data=request.get_json(silent=True) or {}
+    # Accept both the API vocabulary and the frontend workflow vocabulary.
+    decision_map={'approve':'approved','approved':'approved',
+                  'request_changes':'changes_requested','changes_requested':'changes_requested',
+                  'reject':'rejected','rejected':'rejected'}
+    decision=decision_map.get(str(data.get('decision','')).strip().lower())
+    r=get('examinations',exam_id)
+    if not r or not decision:return jsonify(error='Invalid moderation decision'),400
+    user=current_user()
+    if not _school_authorized_for_exam(r.payload,user): return jsonify(error='Forbidden: this Principal is not authorized to moderate this examination.'),403
+    if r.payload.get('status') not in {'submitted_for_approval','changes_requested'}:
+        return jsonify(error='Only examinations submitted for Principal moderation can be reviewed.'),409
+    r.payload.update(
+        approval_status=decision,
+        status='approved' if decision=='approved' else decision,
+        reviewed_by=get_jwt_identity(),
+        reviewed_at=now(),
+        principal_feedback=data.get('feedback','').strip()
+    )
+    flag_modified(r,'payload')
+    db.session.commit()
+
+    # Approval is the hand-off point to candidate delivery. Generate the
+    # personalized papers server-side so CBT/offline candidates can access them
+    # even when the approver's browser does not perform a local-state refresh.
+    if decision == 'approved':
+        try:
+            generate_papers(exam_id)
+        except Exception:
+            db.session.rollback()
+            return jsonify(error='Examination approved, but candidate paper generation failed. Please generate papers from the examination workspace.'),500
+
+    return jsonify(r.payload)
 
 # ---- Scripts / marking / results ------------------------------------------
 @api.post('/answer-scripts/intake')
@@ -518,8 +638,14 @@ def intake_script():
     if paper.get('student_id') is None: return jsonify(error='Candidate paper has no student.'),400
     if paper.get('status') not in {'generated','distributed','collected','scanned'}: return jsonify(error='Candidate paper must be generated before script intake.'),409
     if not paper.get('student_id'): return jsonify(error='Candidate paper has no student.'),400
-    existing=next((r for r in rows('answer-scripts') if r.payload.get('paper_id')==paper['id'] and r.payload.get('review_status')=='examiner_approved'),None)
-    if existing: return jsonify(error='An examiner-approved script already exists for this candidate paper.'),409
+    if exam.get('status')=='finalized':
+        # Super-Admin can intake even if finalized
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Finalized examinations cannot receive new answer scripts.'),409
+    existing=next((r for r in rows('answer-scripts') if r.payload.get('paper_id')==paper['id']),None)
+    if existing:
+        if existing.payload.get('review_status')=='examiner_approved': return jsonify(error='An examiner-approved script already exists for this candidate paper.'),409
+        return jsonify(error='An answer script already exists for this candidate paper. Update that pending script instead of creating a duplicate.'),409
     all_q={x.payload['id']:x.payload for x in rows('questions') if x.payload.get('examination_id')==exam['id']}
     assigned=paper.get('assigned_question_ids') or list(all_q)
     qs=[all_q[qid] for qid in assigned if qid in all_q]; answers=[]
@@ -540,30 +666,68 @@ def intake_script():
 def finalize_script(script_id):
     r=get('answer-scripts',script_id)
     if not r:return jsonify(error='Not found'),404
+    user=current_user()
+    if not _marking_actor_authorized(r.payload,user): return jsonify(error='Forbidden: only an authorized examiner may finalize this script.'),403
+    exam=payload('examinations',r.payload.get('examination_id'))
+    if not exam:
+        return jsonify(error='Examination not found.'),404
+    if exam.get('status') not in {'approved','finalized'}:
+        # Super-Admin can finalize even if not approved/finalized
+        if get_jwt().get('role') != 'super-admin':
+            return jsonify(error='Scripts may only be finalized for an approved examination.'),409
     if r.payload.get('review_status')=='examiner_approved': return jsonify(error='Script is already examiner-approved.'),409
-    data=request.get_json(silent=True) or {}; total=0; revisions=[]
-    for item in data.get('answers',[]):
-        a=next((a for a in r.payload.get('answers',[]) if a['id']==item.get('answer_id')),None)
-        if not a:continue
-        old=float(a.get('final_score',a.get('proposed_score',0)) or 0); new=max(0,float(item.get('final_score',old)))
-        if new!=old and not str(item.get('reason','')).strip(): return jsonify(error=f"Reason is required when overriding score for answer {a['id']}"),400
-        a['final_score']=new; a['status']='finalized'; total+=new
-        if new!=old: revisions.append({'id':f"rev-{secrets.token_hex(5)}",'script_answer_id':a['id'],'old_score':old,'new_score':new,'actor':get_jwt_identity(),'reason':item.get('reason','').strip(),'timestamp':now()})
-    if not data.get('answers'): total=sum(float(a.get('final_score',a.get('proposed_score',0)) or 0) for a in r.payload.get('answers',[]))
+    data=request.get_json(silent=True) or {}
+    answers=r.payload.get('answers') or []
+    submitted=data.get('answers')
+    if not isinstance(submitted,list): return jsonify(error='A complete answers array is required before examiner approval.'),400
+    by_id={a.get('id'):a for a in answers}
+    seen=set(); revisions=[]
+    for item in submitted:
+        aid=item.get('answer_id')
+        if aid in seen: return jsonify(error=f'Duplicate answer {aid} in marking payload.'),400
+        seen.add(aid)
+        a=by_id.get(aid)
+        if not a: return jsonify(error=f'Unknown answer {aid}.'),400
+        old=float(a.get('final_score',a.get('proposed_score',0)) or 0)
+        try:new=float(item.get('final_score'))
+        except (TypeError,ValueError): return jsonify(error=f'Invalid final score for answer {aid}.'),400
+        q=payload('questions',a.get('question_id')) or {}
+        maximum=float(q.get('maximum_marks',0) or 0)
+        if new < 0 or new > maximum: return jsonify(error=f'Score for answer {aid} must be between 0 and {maximum}.'),400
+        reason=str(item.get('reason','')).strip()
+        if new!=old and not reason: return jsonify(error=f'Reason is required when overriding score for answer {aid}.'),400
+        a['final_score']=new; a['status']='finalized'
+        if new!=old: revisions.append({'id':f'rev-{secrets.token_hex(5)}','script_answer_id':aid,'old_score':old,'new_score':new,'actor':get_jwt_identity(),'reason':reason,'timestamp':now()})
+    if seen != set(by_id): return jsonify(error='Every answer in the script must be included before examiner approval.'),400
+    total=sum(float(a.get('final_score',0) or 0) for a in answers)
     old_status=r.payload.get('review_status'); r.payload['score']=total; r.payload['review_status']='examiner_approved'; r.payload['status']='marked'; r.payload['finalized_at']=now(); r.payload['finalized_by']=get_jwt_identity(); r.payload['revisions']=revisions; flag_modified(r,'payload')
-    audit(current_user().get('username','system'),'FINALIZE','answer-scripts',script_id,old={'review_status':old_status},new={'review_status':'examiner_approved','score':total,'revisions':revisions},ip=request.remote_addr); db.session.commit(); return jsonify(r.payload,revisions=revisions)
+    audit(user.get('username','system'),'FINALIZE','answer-scripts',script_id,old={'review_status':old_status},new={'review_status':'examiner_approved','score':total,'revisions':revisions},ip=request.remote_addr); db.session.commit(); return jsonify(r.payload,revisions=revisions)
 
 @api.post('/answer-scripts/bulk-finalize')
 @auth_required
 def finalize_scripts_bulk():
-    data=request.get_json(silent=True) or {}; ids=[str(x) for x in data.get('script_ids',[])]; done=[]; skipped=[]
+    user=current_user(); data=request.get_json(silent=True) or {}; ids=[str(x) for x in data.get('script_ids',[])]; done=[]; skipped=[]
     for sid in ids:
         r=get('answer-scripts',sid)
         if not r: skipped.append({'id':sid,'reason':'not found'}); continue
+        if not _marking_actor_authorized(r.payload,user): skipped.append({'id':sid,'reason':'forbidden'}); continue
+        exam=payload('examinations',r.payload.get('examination_id'))
+        if not exam:
+            skipped.append({'id':sid,'reason':'examination not found'}); continue
+        if exam.get('status') not in {'approved','finalized'} and get_jwt().get('role') != 'super-admin':
+            skipped.append({'id':sid,'reason':'examination is not approved'}); continue
         if r.payload.get('review_status')=='examiner_approved': skipped.append({'id':sid,'reason':'already approved'}); continue
-        total=sum(float(a.get('final_score',a.get('proposed_score',0)) or 0) for a in r.payload.get('answers',[]))
+        answers=r.payload.get('answers') or []
+        if not answers or any(a.get('final_score') is None for a in answers): skipped.append({'id':sid,'reason':'every answer must have a final score'}); continue
+        invalid=False
+        for a in answers:
+            q=payload('questions',a.get('question_id')) or {}; score=float(a.get('final_score',0) or 0); maximum=float(q.get('maximum_marks',0) or 0)
+            if score<0 or score>maximum: invalid=True; break
+            a['status']='finalized'
+        if invalid: skipped.append({'id':sid,'reason':'one or more scores are outside question maximum'}); continue
+        total=sum(float(a.get('final_score',0) or 0) for a in answers)
         r.payload['score']=total; r.payload['review_status']='examiner_approved'; r.payload['status']='marked'; r.payload['finalized_at']=now(); r.payload['finalized_by']=get_jwt_identity(); flag_modified(r,'payload'); done.append(sid)
-    if done: audit(current_user().get('username','system'),'FINALIZE','answer-scripts-bulk','bulk',new={'finalized':done,'skipped':skipped},ip=request.remote_addr)
+    if done: audit(user.get('username','system'),'FINALIZE','answer-scripts-bulk','bulk',new={'finalized':done,'skipped':skipped},ip=request.remote_addr)
     db.session.commit(); return jsonify(finalized=done,skipped=skipped,count=len(done))
 
 @api.post('/answer-scripts/<script_id>/attachment')
@@ -584,29 +748,68 @@ def attach_script_attachment(script_id):
 def finalize_results(exam_id):
     exam=payload('examinations',exam_id)
     if not exam:return jsonify(error='Not found'),404
-    papers=[r.payload for r in rows('student-papers') if r.payload.get('examination_id')==exam_id and r.payload.get('status') in {'generated','distributed','collected','scanned'}]
-    scripts=[r.payload for r in rows('answer-scripts') if r.payload.get('examination_id')==exam_id and r.payload.get('review_status')=='examiner_approved']
-    if not scripts:return jsonify(error='No examiner-approved scripts found.'),409
-    paper_ids={p['id'] for p in papers}; scripts=[s for s in scripts if s.get('paper_id') in paper_ids]
-    existing_by_student={r.payload.get('student_id'):r for r in rows('results') if r.payload.get('examination_id')==exam_id}
+    if exam.get('status') == 'finalized':
+        return jsonify(error='Examination results are already finalized and locked.'),409
+    if exam.get('status') != 'approved' and get_jwt().get('role') not in ('super-admin', 'director'):
+        return jsonify(error='Examination must be formally approved by the Principal before results can be finalized.'),409
+
+    papers=[r.payload for r in rows('student-papers')
+            if r.payload.get('examination_id')==exam_id
+            and r.payload.get('status') in {'generated','distributed','collected','scanned'}]
+    scripts=[r.payload for r in rows('answer-scripts')
+             if r.payload.get('examination_id')==exam_id]
+
+    # A result is authoritative only after examiner moderation. Do not silently
+    # promote pending/rejected scripts during result finalization.
+    pending=[s for s in scripts if s.get('review_status')!='examiner_approved']
+    if pending and get_jwt().get('role') not in ('super-admin', 'director'):
+        return jsonify(error=f'{len(pending)} answer script(s) are still pending examiner moderation.'),409
+
+    paper_ids={p['id'] for p in papers}
+    approved=[s for s in scripts if s.get('paper_id') in paper_ids and (s.get('review_status')=='examiner_approved' or get_jwt().get('role') in ('super-admin', 'director'))]
+    if not approved:return jsonify(error='No examiner-approved scripts found.'),409
+
+    existing_by_student={r.payload.get('student_id'):r
+                         for r in rows('results')
+                         if r.payload.get('examination_id')==exam_id}
     finalized=[]
-    for s in scripts:
-        total=float(s.get('score',0)); pct=round((total/float(exam.get('maximum_marks') or 1))*100,2); result=existing_by_student.get(s['student_id'])
+    for s in approved:
+        total=sum(float(a.get('final_score',a.get('proposed_score',0)) or 0)
+                  for a in (s.get('answers') or []))
+        pct=round((total/float(exam.get('maximum_marks') or 1))*100,2)
+        result=existing_by_student.get(s['student_id'])
         if result:
-            if result.payload.get('status')=='finalized': finalized.append(result.payload); continue
-            result.payload.update(raw_marks=total,maximum_marks=exam.get('maximum_marks',0),percentage=pct,grade=grade_for(pct),status='finalized',finalized_at=now(),finalized_by=get_jwt_identity()); flag_modified(result,'payload'); finalized.append(result.payload)
+            result.payload.update(raw_marks=total,maximum_marks=exam.get('maximum_marks',0),
+                                  percentage=pct,grade=grade_for(pct),status='finalized',
+                                  finalized_at=now(),finalized_by=get_jwt_identity())
+            flag_modified(result,'payload')
+            finalized.append(result.payload)
         else:
-            rid=f"res-{secrets.token_hex(6)}"; result={'id':rid,'examination_id':exam_id,'student_id':s['student_id'],'raw_marks':total,'maximum_marks':exam.get('maximum_marks',0),'percentage':pct,'grade':grade_for(pct),'position':0,'status':'finalized','finalized_at':now(),'finalized_by':get_jwt_identity()}; put('results',result,rid); finalized.append(result)
-    # Competition ranking with ties, finalized results only.
-    ranked=sorted(finalized,key=lambda x:(-float(x.get('raw_marks',0)),-float(x.get('percentage',0)),x.get('student_id',''))); prev=None; rank=0
+            rid=f"res-{secrets.token_hex(6)}"
+            result={'id':rid,'examination_id':exam_id,'student_id':s['student_id'],
+                    'raw_marks':total,'maximum_marks':exam.get('maximum_marks',0),
+                    'percentage':pct,'grade':grade_for(pct),'position':0,'status':'finalized',
+                    'finalized_at':now(),'finalized_by':get_jwt_identity()}
+            put('results',result,rid)
+            finalized.append(result)
+
+    ranked=sorted(finalized,key=lambda x:(-float(x.get('raw_marks',0)),
+                                          -float(x.get('percentage',0)),x.get('student_id','')))
+    prev=None; rank=0
     for i,r in enumerate(ranked,1):
         key=(float(r.get('raw_marks',0)),float(r.get('maximum_marks',0)))
         if key!=prev: rank=i; prev=key
         r['position']=rank
         rr=get('results',r['id'])
         if rr: rr.payload=r; flag_modified(rr,'payload')
-    examr=get('examinations',exam_id); examr.payload['status']='finalized'; examr.payload['finalized_at']=now(); examr.payload['finalized_by']=get_jwt_identity(); flag_modified(examr,'payload')
-    audit(current_user().get('username','system'),'FINALIZE','examination-results',exam_id,new={'count':len(ranked),'status':'finalized'},ip=request.remote_addr); db.session.commit(); return jsonify(results=ranked,count=len(ranked))
+
+    examr=get('examinations',exam_id)
+    examr.payload.update(status='finalized',finalized_at=now(),finalized_by=get_jwt_identity())
+    flag_modified(examr,'payload')
+    audit(current_user().get('username','system'),'FINALIZE','examination-results',exam_id,
+          new={'count':len(ranked),'status':'finalized'},ip=request.remote_addr)
+    db.session.commit()
+    return jsonify(results=ranked,count=len(ranked))
 
 # ---- Students / attendance / report cards ---------------------------------
 @api.post('/students/<student_id>/promote')
@@ -637,23 +840,64 @@ def save_rollcall():
 @api.post('/report-cards/generate')
 @auth_required
 def generate_report_card():
-    d=request.get_json(silent=True) or {}; st=payload('students',d.get('student_id')); sess=d.get('session_id'); term=d.get('term_id')
+    d=request.get_json(silent=True) or {}
+    st=payload('students',d.get('student_id')); sess=d.get('session_id'); term=d.get('term_id')
     if not st:return jsonify(error='Student not found'),404
-    results=[r.payload for r in rows('results') if r.payload.get('student_id')==st['id'] and r.payload.get('status')=='finalized']
+    if not sess or not term:return jsonify(error='Session and term are required'),400
+    if not school_visible(st,current_user()): return jsonify(error='Forbidden'),403
+
+    results=[r.payload for r in rows('results')
+             if r.payload.get('student_id')==st['id'] and r.payload.get('status')=='finalized']
     subjects=[]
+    seen_exams=set()
     for r in results:
-        ex=payload('examinations',r['examination_id']); sub=payload('subjects',ex.get('subject_id')) if ex else None
-        if ex and ex.get('session_id')==sess and ex.get('term_id')==term: subjects.append({'subject_name':sub.get('name') if sub else ex.get('subject_id'),'subject_code':sub.get('code') if sub else '','raw_marks':r.get('raw_marks',0),'max_marks':r.get('maximum_marks',0),'percentage':r.get('percentage',0),'grade':r.get('grade','F'),'remark':'','position':r.get('position',0)})
-    total=sum(float(x['raw_marks']) for x in subjects); mx=sum(float(x['max_marks']) for x in subjects); avg=round(total/mx*100,2) if mx else 0
-    classmates=[x.payload for x in rows('students') if x.payload.get('class_id')==st.get('class_id') and x.payload.get('school_id')==st.get('school_id') and x.payload.get('status','active')=='active']; participant_avgs=[]
+        ex=payload('examinations',r['examination_id'])
+        sub=payload('subjects',ex.get('subject_id')) if ex else None
+        if ex and ex.get('status')=='finalized' and ex.get('session_id')==sess and ex.get('term_id')==term and ex['id'] not in seen_exams:
+            seen_exams.add(ex['id'])
+            subjects.append({'subject_name':sub.get('name') if sub else ex.get('subject_id'),
+                             'subject_code':sub.get('code') if sub else '',
+                             'raw_marks':r.get('raw_marks',0),'max_marks':r.get('maximum_marks',0),
+                             'percentage':r.get('percentage',0),'grade':r.get('grade','F'),
+                             'remark':'','position':r.get('position',0)})
+    if not subjects:return jsonify(error='No finalized examination results found for this student in the selected session/term.'),409
+
+    total=sum(float(x['raw_marks']) for x in subjects); mx=sum(float(x['max_marks']) for x in subjects)
+    avg=round(total/mx*100,2) if mx else 0
+    classmates=[x.payload for x in rows('students')
+                if x.payload.get('class_id')==st.get('class_id')
+                and x.payload.get('school_id')==st.get('school_id')
+                and x.payload.get('status','active')=='active']
+    participant_avgs=[]
     for c in classmates:
-        cr=[r.payload for r in rows('results') if r.payload.get('student_id')==c['id'] and r.payload.get('status')=='finalized']
-        cr=[r for r in cr if (payload('examinations',r.get('examination_id')) or {}).get('session_id')==sess and (payload('examinations',r.get('examination_id')) or {}).get('term_id')==term]
+        cr=[r.payload for r in rows('results')
+            if r.payload.get('student_id')==c['id'] and r.payload.get('status')=='finalized']
+        cr=[r for r in cr if (payload('examinations',r.get('examination_id')) or {}).get('status')=='finalized'
+            and (payload('examinations',r.get('examination_id')) or {}).get('session_id')==sess
+            and (payload('examinations',r.get('examination_id')) or {}).get('term_id')==term]
         if cr:
             total_c=sum(float(r.get('raw_marks',0)) for r in cr); max_c=sum(float(r.get('maximum_marks',0)) for r in cr)
-            if max_c: participant_avgs.append(round(total_c/max_c*100,2))
-    pos=1+sum(1 for x in participant_avgs if x>avg); rid=f"rc-{secrets.token_hex(6)}"; code=f"EDS-RC-{st.get('admission_number','').replace('/','')}-{secrets.token_hex(3).upper()}"
-    card={'id':rid,'student_id':st['id'],'session_id':sess,'term_id':term,'school_id':st['school_id'],'class_id':st['class_id'],'total_marks':total,'max_possible':mx,'average_percent':avg,'position':pos,'total_students':len(participant_avgs),'attendance_present':st.get('attendance_days',0),'attendance_total':st.get('total_days',0),'conduct_grade':st.get('conduct_rating',''),'teacher_comment':'','principal_comment':'','promotion_status':'Under Review','verification_code':code,'issued_at':now(),'subjects':subjects}; put('report-cards',card,rid); db.session.commit(); return jsonify(card),201
+            if max_c:participant_avgs.append(round(total_c/max_c*100,2))
+    pos=1+sum(1 for x in participant_avgs if x>avg)
+    existing=next((r for r in rows('report-cards')
+                   if r.payload.get('student_id')==st['id']
+                   and r.payload.get('session_id')==sess
+                   and r.payload.get('term_id')==term),None)
+    rid=existing.payload['id'] if existing else f"rc-{secrets.token_hex(6)}"
+    code=existing.payload.get('verification_code') if existing else f"EDS-RC-{st.get('admission_number','').replace('/','')}-{secrets.token_hex(3).upper()}"
+    card={'id':rid,'student_id':st['id'],'session_id':sess,'term_id':term,'school_id':st['school_id'],
+          'class_id':st['class_id'],'total_marks':total,'max_possible':mx,'average_percent':avg,'position':pos,
+          'total_students':len(participant_avgs),'attendance_present':st.get('attendance_days',0),
+          'attendance_total':st.get('total_days',0),'conduct_grade':st.get('conduct_rating',''),
+          'teacher_comment':'','principal_comment':'','promotion_status':'Under Review',
+          'verification_code':code,'issued_at':existing.payload.get('issued_at',now()) if existing else now(),
+          'subjects':subjects}
+    if existing:
+        existing.payload=card; flag_modified(existing,'payload')
+    else: put('report-cards',card,rid)
+    audit(current_user().get('username','system'),'GENERATE','report-card',rid,new=card,ip=request.remote_addr)
+    db.session.commit()
+    return jsonify(card),200 if existing else 201
 
 @api.get('/verify/report-card/<code>')
 def verify_report_card(code):
@@ -737,7 +981,7 @@ def candidate_access():
     if not exam_id or not admission:
         return jsonify(error='Enter your admission number.'),400
     exam=payload('examinations',exam_id)
-    if not exam or exam.get('status') in {'draft','questions_verified','scheme_locked','submitted_for_approval','changes_requested','rejected'}:
+    if not exam or exam.get('status') in {'draft','questions_verified','scheme_locked','submitted_for_approval','changes_requested','rejected','finalized'}:
         return jsonify(error='This examination is not available for candidates.'),403
     student=next((r.payload for r in rows('students') if str(r.payload.get('admission_number','')).strip().upper()==admission),None)
     if not student:
@@ -759,20 +1003,82 @@ def cbt_submit(paper_id):
     r=get('student-papers',paper_id); d=request.get_json(silent=True) or {}
     if not r:return jsonify(error='Paper not found'),404
     if r.payload.get('status')=='enrolled':return jsonify(error='Candidate paper has not been generated yet.'),409
-    if r.payload.get('cbt_status') in {'submitted','graded'}:return jsonify(error='CBT submission is already locked.'),409
+    if r.payload.get('cbt_status') in {'submitted','graded'}:
+        existing=next((x.payload for x in rows('results')
+                       if x.payload.get('examination_id')==r.payload.get('examination_id')
+                       and x.payload.get('student_id')==r.payload.get('student_id')),None)
+        return jsonify(error='This examination has already been submitted.',result=existing,
+                       score=r.payload.get('cbt_score',0),
+                       maximum_marks=(payload('examinations',r.payload.get('examination_id')) or {}).get('maximum_marks',0),
+                       percentage=(existing or {}).get('percentage',0)),409
     claims=get_jwt()
     if claims.get('role')=='candidate':
         if str(claims.get('student_id')) != str(r.payload.get('student_id')) or str(claims.get('paper_id')) != str(paper_id) or str(claims.get('examination_id')) != str(r.payload.get('examination_id')):
             return jsonify(error='This examination paper does not belong to the authenticated candidate.'),403
-    elif not school_visible(r.payload,current_user()):
-        return jsonify(error='Forbidden'),403
-    exam=payload('examinations',r.payload.get('examination_id')); qmap={x.payload['id']:x.payload for x in rows('questions') if x.payload.get('examination_id')==exam.get('id')}; assigned=r.payload.get('assigned_question_ids') or list(qmap); qs=[qmap[qid] for qid in assigned if qid in qmap]
-    answers=d.get('answers',{}); total=0
+    elif not school_visible(r.payload,current_user()): return jsonify(error='Forbidden'),403
+
+    exam=payload('examinations',r.payload.get('examination_id'))
+    if not exam:return jsonify(error='Associated examination not found.'),404
+    if exam.get('status') == 'finalized' and get_jwt().get('role') != 'super-admin':
+        return jsonify(error='This examination has already been finalized and is closed to candidate submissions.'),409
+    qmap={x.payload['id']:x.payload for x in rows('questions') if x.payload.get('examination_id')==exam.get('id')}
+    assigned=r.payload.get('assigned_question_ids') or list(qmap)
+    qs=[qmap[qid] for qid in assigned if qid in qmap]
+    answers=d.get('answers',{}) or {}
+    total=0; script_answers=[]; has_theory=False
+    sid=f"scr-cbt-{paper_id}"
     for q in qs:
-        if q.get('question_type')=='objective' and str(answers.get(q['id'],'')).strip().upper()==str(q.get('correct_answer','')).upper(): total+=float(q.get('maximum_marks',0))
+        resp=str(answers.get(q['id'],'')).strip()
+        earned=0
+        status='finalized'
+        if q.get('question_type')=='objective':
+            if resp.upper()==str(q.get('correct_answer','')).strip().upper(): earned=float(q.get('maximum_marks',0))
+        else:
+            has_theory=True
+            # Provisional score is displayed immediately but remains subject to examiner moderation.
+            if resp: earned=float(deterministic_theory(q.get('text',''),resp,q.get('expected_answer',''),int(q.get('maximum_marks',0))).get('proposedScore',0))
+            status='proposed'
+        total+=earned
+        script_answers.append({'id':f"sa-cbt-{paper_id}-{q['id']}",'script_id':sid,'question_id':q['id'],
+                              'student_raw_response':resp,
+                              'detected_mcq_choice':resp.upper()[:1] if q.get('question_type')=='objective' else None,
+                              'proposed_score':earned,'confidence':1.0 if q.get('question_type')=='objective' else .88,
+                              'final_score':earned if q.get('question_type')=='objective' else None,
+                              'status':status})
     pct=round(total/(float(exam.get('maximum_marks') or 1))*100,1)
-    r.payload.update(cbt_status='submitted',cbt_answers=answers,cbt_score=total,cbt_auto_marked=True,cbt_submitted_at=now()); flag_modified(r,'payload')
-    rid=f"res-{secrets.token_hex(6)}"; result={'id':rid,'examination_id':exam['id'],'student_id':r.payload['student_id'],'raw_marks':total,'maximum_marks':exam.get('maximum_marks',0),'percentage':pct,'grade':grade_for(pct),'position':0,'status':'draft'}; put('results',result,rid); db.session.commit(); return jsonify(paper=r.payload,result=result)
+    final_status='reviewed' if has_theory else 'finalized'
+    r.payload.update(cbt_status='submitted',cbt_answers=answers,cbt_score=total,
+                     cbt_auto_marked=True,cbt_submitted_at=now(),status='collected')
+    flag_modified(r,'payload')
+
+    existing_script=next((x for x in rows('answer-scripts') if x.payload.get('paper_id')==paper_id),None)
+    script={'id':existing_script.payload['id'] if existing_script else sid,'paper_id':paper_id,
+            'examination_id':exam['id'],'student_id':r.payload['student_id'],'intake_type':'digital',
+            'status':'marked','review_status':'pending_review' if has_theory else 'examiner_approved',
+            'score':total,'maximum_marks':exam.get('maximum_marks',0),'answers':script_answers,'created_at':now()}
+    if existing_script:
+        existing_script.payload=script; flag_modified(existing_script,'payload')
+    else: put('answer-scripts',script,script['id'])
+
+    existing_result=next((x for x in rows('results')
+                          if x.payload.get('examination_id')==exam['id']
+                          and x.payload.get('student_id')==r.payload['student_id']),None)
+    result={'id':existing_result.payload['id'] if existing_result else f"res-cbt-{paper_id}",
+            'examination_id':exam['id'],'student_id':r.payload['student_id'],
+            'raw_marks':total,'maximum_marks':exam.get('maximum_marks',0),'percentage':pct,
+            'grade':grade_for(pct),'position':0,'status':final_status}
+    if final_status=='finalized':
+        result.update(finalized_at=now(),finalized_by='CBT Automated Marking Engine')
+    if existing_result:
+        existing_result.payload.update(result); flag_modified(existing_result,'payload')
+    else: put('results',result,result['id'])
+
+    audit(current_user().get('username','candidate'),'SUBMIT','student-paper',paper_id,
+          new={'score':total,'percentage':pct,'has_theory':has_theory},ip=request.remote_addr)
+    db.session.commit()
+    return jsonify(paper=r.payload,result=result,score=total,maximum_marks=exam.get('maximum_marks',0),percentage=pct,
+                   message='Examination submitted successfully. Score displayed immediately; theory responses remain subject to examiner moderation.' if has_theory
+                           else 'Examination submitted successfully. Objective score finalized immediately.')
 
 @api.post('/examinations/<exam_id>/pipeline')
 @auth_required
@@ -780,6 +1086,8 @@ def complete_pipeline(exam_id):
     # One transactionally coordinated path for imported questions + scheme + rubric + candidate papers.
     d=request.get_json(silent=True) or {}; exam=payload('examinations',exam_id)
     if not exam:return jsonify(error='Examination not found'),404
+    if exam.get('status') in {'approved','finalized'} and get_jwt().get('role') != 'super-admin':
+        return jsonify(error='Approved/finalized examinations are locked; pipeline changes require a new draft/change-request cycle.'),409
     questions=d.get('questions',[])
     if questions:
         for q in questions:

@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import {
   FileSpreadsheet,
@@ -11,7 +10,8 @@ import {
   TrendingUp,
   Users,
   Search,
-  Filter
+  Filter,
+  RefreshCw
 } from 'lucide-react';
 import { store, AppStoreState } from '../lib/store';
 import { Examination, Result, Student, GradeScale } from '../types';
@@ -86,6 +86,14 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
     const res = store.finalizeAllEligibleExaminationResults();
     alert(res.message);
     onRefresh();
+  };
+
+  // ---- NEW: Recalculate Percentages ----
+  const handleRecalcPercentages = () => {
+    if (!selectedExam) return;
+    const res = store.recalculateResultPercentages(selectedExam.id);
+    alert(res.message);
+    if (res.success) onRefresh();
   };
 
   // Handle Direct Download of Student Report Card from Results Table
@@ -170,6 +178,17 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
           >
             <TrendingUp className="w-4 h-4" />
             <span>{showAnalytics ? 'Hide Performance Trends' : 'View LGA & School Trends'}</span>
+          </button>
+
+          {/* RECALC PERCENTAGES BUTTON (NEW) */}
+          <button
+            onClick={handleRecalcPercentages}
+            disabled={!selectedExam}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
+            title="Recalculate percentages for all results using the current exam maximum marks"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Recalc Percentages</span>
           </button>
 
           {/* Finalize Results Gate Button */}

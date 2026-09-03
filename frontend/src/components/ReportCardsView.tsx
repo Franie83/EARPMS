@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Award,
@@ -66,6 +65,12 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
   const [isDownloading, setIsDownloading] = useState(false);
   const [searchFilter, setSearchFilter] = useState('');
   const [viewMode, setViewMode] = useState<'single' | 'all'>('single');
+
+  // ===== NEW: All Cards View state =====
+  const [allSearch, setAllSearch] = useState('');
+  const [allSessionFilter, setAllSessionFilter] = useState<string>('ALL');
+  const [allTermFilter, setAllTermFilter] = useState<string>('ALL');
+  const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
 
   // In-place Report Card Content Editor Modal State
   const [showEditModal, setShowEditModal] = useState(false);
@@ -380,6 +385,59 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
     }
   };
 
+  // ===== NEW: Bulk delete handler =====
+  const handleBulkDelete = () => {
+    if (selectedCardIds.size === 0) return;
+    if (!confirm(`Delete ${selectedCardIds.size} report card(s)? This action cannot be undone.`)) return;
+    let deleted = 0;
+    let failed = 0;
+    selectedCardIds.forEach(id => {
+      const res = store.deleteReportCard(id);
+      if (res.success) deleted++;
+      else failed++;
+    });
+    alert(`Successfully deleted ${deleted} report card(s).${failed ? ` ${failed} failed.` : ''}`);
+    setSelectedCardIds(new Set());
+    onRefresh();
+  };
+
+  const toggleCardSelection = (id: string) => {
+    setSelectedCardIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) newSet.delete(id);
+      else newSet.add(id);
+      return newSet;
+    });
+  };
+
+  const toggleAllCards = (checked: boolean) => {
+    if (checked) {
+      const allIds = filteredAllCards.map(c => c.id);
+      setSelectedCardIds(new Set(allIds));
+    } else {
+      setSelectedCardIds(new Set());
+    }
+  };
+
+  // ===== NEW: Filtered all cards =====
+  const filteredAllCards = useMemo(() => {
+    return reportCards.filter(card => {
+      if (allSearch.trim()) {
+        const q = allSearch.toLowerCase();
+        const stu = students.find(s => s.id === card.student_id);
+        const sch = schools.find(s => s.id === card.school_id);
+        const match = 
+          stu?.full_name.toLowerCase().includes(q) ||
+          stu?.admission_number.toLowerCase().includes(q) ||
+          sch?.name.toLowerCase().includes(q);
+        if (!match) return false;
+      }
+      if (allSessionFilter !== 'ALL' && card.session_id !== allSessionFilter) return false;
+      if (allTermFilter !== 'ALL' && card.term_id !== allTermFilter) return false;
+      return true;
+    });
+  }, [reportCards, allSearch, allSessionFilter, allTermFilter, students, schools]);
+
   const isAuthorizedToEdit = ['super-admin', 'admin', 'director', 'principal', 'teacher'].includes(currentUser.role);
 
   return (
@@ -495,116 +553,78 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
               <span>Delete Report Card</span>
             </button>
           )}
+        </div>
+      </div>
 
-          {viewMode === 'all' && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden print:hidden">
-          <div className="p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
-            <div><h3 className="font-black text-slate-900">All Report Cards</h3><p className="text-xs text-slate-500 mt-1">Session: {session?.name || '—'} • Term: {term?.name || '—'}</p></div>
-            <input value={searchFilter} onChange={e => setSearchFilter(e.target.value)} placeholder="Search pupil or admission number" className="px-3 py-2 border border-slate-300 rounded-xl text-xs w-64" />
+      {/* CONTINUOUS REPORT CARD NAVIGATOR BAR (visible only in single mode) */}
+      {viewMode === 'single' && (
+        <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-4 rounded-2xl border border-orange-500/30 shadow-md flex flex-wrap items-center justify-between gap-4 print:hidden">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-orange-500/20 border border-orange-400/40 flex items-center justify-center text-orange-400">
+              <GraduationCap className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] uppercase font-black tracking-widest text-orange-400">
+                  Candidate Switcher
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-orange-500/20 text-orange-200 border border-orange-500/30">
+                  Student {currentStudentIndex >= 0 ? currentStudentIndex + 1 : 1} of {candidateList.length}
+                </span>
+              </div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>{student?.full_name || 'Select a Candidate'}</span>
+                <span className="text-xs font-mono text-orange-300 font-normal">
+                  ({student?.admission_number})
+                </span>
+              </h3>
+            </div>
           </div>
-          <div className="overflow-x-auto"><table className="w-full text-xs"><thead className="bg-slate-50"><tr>
-            <th className="text-left p-3">#</th><th className="text-left p-3">Candidate</th><th className="text-left p-3">Admission No.</th><th className="text-left p-3">School</th><th className="text-right p-3">Average</th><th className="text-right p-3">Position</th><th className="text-left p-3">Promotion</th><th className="p-3">Action</th>
-          </tr></thead><tbody>
-            {reportCards.filter(rc => rc.session_id === selectedSessionId && rc.term_id === selectedTermId).filter(rc => { const st=students.find(x=>x.id===rc.student_id); const q=searchFilter.toLowerCase().trim(); return !q || st?.full_name.toLowerCase().includes(q) || st?.admission_number.toLowerCase().includes(q); }).map((rc,idx) => { const st=students.find(x=>x.id===rc.student_id); const sc=schools.find(x=>x.id===rc.school_id); return <tr key={rc.id} className="border-t border-slate-100 hover:bg-slate-50">
-              <td className="p-3 font-bold">{idx+1}</td><td className="p-3 font-bold">{st?.full_name || 'Unknown'}</td><td className="p-3 font-mono">{st?.admission_number || '—'}</td><td className="p-3">{sc?.name || '—'}</td><td className="p-3 text-right font-black">{rc.average_percent.toFixed(1)}%</td><td className="p-3 text-right">{rc.position} / {rc.total_students}</td><td className="p-3">{rc.promotion_status}</td><td className="p-3 text-center"><button onClick={() => { setSelectedStudentId(rc.student_id); setViewMode('single'); }} className="px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-800 font-bold">View</button></td>
-            </tr> })}
-          </tbody></table></div>
+
+          {/* Previous & Next Navigation Controls */}
+          <div className="flex items-center gap-2">
+            <div className="relative hidden md:block">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search candidate name..."
+                value={searchFilter}
+                onChange={e => setSearchFilter(e.target.value)}
+                className="pl-8 pr-3 py-1.5 text-xs bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:border-orange-400 w-44"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={handlePrevStudent}
+              disabled={currentStudentIndex <= 0}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold transition-all border border-slate-600/40 cursor-pointer disabled:cursor-not-allowed shadow-xs"
+              title="Navigate to Previous Student (Keyboard: Left Arrow)"
+            >
+              <ChevronLeft className="w-4 h-4 text-orange-400" />
+              <span>Prev</span>
+            </button>
+
+            <span className="text-xs font-mono text-slate-300 px-1 font-semibold">
+              {currentStudentIndex >= 0 ? currentStudentIndex + 1 : 0} / {candidateList.length}
+            </span>
+
+            <button
+              type="button"
+              onClick={handleNextStudent}
+              disabled={currentStudentIndex >= candidateList.length - 1}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 disabled:opacity-40 text-slate-950 text-xs font-black transition-all border border-orange-400 cursor-pointer disabled:cursor-not-allowed shadow-md shadow-orange-500/20"
+              title="Navigate to Next Student (Keyboard: Right Arrow)"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-4 h-4 text-slate-950" />
+            </button>
+          </div>
         </div>
       )}
 
-      {activeCard && (
-            <>
-              {/* Primary Download Report Card Button */}
-              <button
-                onClick={handleDownloadPdf}
-                disabled={isDownloading}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition-all shadow-xs shadow-emerald-600/20 cursor-pointer disabled:opacity-50"
-              >
-                <Download className="w-4 h-4" />
-                <span>{isDownloading ? 'Preparing PDF...' : 'Download Report Card'}</span>
-              </button>
-
-              {/* Print Official Sheet */}
-              <button
-                onClick={() => window.print()}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer"
-              >
-                <Printer className="w-4 h-4 text-orange-400" />
-                <span>Print Official Sheet</span>
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* CONTINUOUS REPORT CARD NAVIGATOR BAR */}
-      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white p-4 rounded-2xl border border-orange-500/30 shadow-md flex flex-wrap items-center justify-between gap-4 print:hidden">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-orange-500/20 border border-orange-400/40 flex items-center justify-center text-orange-400">
-            <GraduationCap className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] uppercase font-black tracking-widest text-orange-400">
-                Candidate Switcher
-              </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-orange-500/20 text-orange-200 border border-orange-500/30">
-                Student {currentStudentIndex >= 0 ? currentStudentIndex + 1 : 1} of {candidateList.length}
-              </span>
-            </div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <span>{student?.full_name || 'Select a Candidate'}</span>
-              <span className="text-xs font-mono text-orange-300 font-normal">
-                ({student?.admission_number})
-              </span>
-            </h3>
-          </div>
-        </div>
-
-        {/* Previous & Next Navigation Controls */}
-        <div className="flex items-center gap-2">
-          {/* Quick Search Input */}
-          <div className="relative hidden md:block">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search candidate name..."
-              value={searchFilter}
-              onChange={e => setSearchFilter(e.target.value)}
-              className="pl-8 pr-3 py-1.5 text-xs bg-slate-800/80 border border-slate-700 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:border-orange-400 w-44"
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={handlePrevStudent}
-            disabled={currentStudentIndex <= 0}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white text-xs font-bold transition-all border border-slate-600/40 cursor-pointer disabled:cursor-not-allowed shadow-xs"
-            title="Navigate to Previous Student (Keyboard: Left Arrow)"
-          >
-            <ChevronLeft className="w-4 h-4 text-orange-400" />
-            <span>Prev</span>
-          </button>
-
-          <span className="text-xs font-mono text-slate-300 px-1 font-semibold">
-            {currentStudentIndex >= 0 ? currentStudentIndex + 1 : 0} / {candidateList.length}
-          </span>
-
-          <button
-            type="button"
-            onClick={handleNextStudent}
-            disabled={currentStudentIndex >= candidateList.length - 1}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-400 hover:to-amber-400 disabled:opacity-40 text-slate-950 text-xs font-black transition-all border border-orange-400 cursor-pointer disabled:cursor-not-allowed shadow-md shadow-orange-500/20"
-            title="Navigate to Next Student (Keyboard: Right Arrow)"
-          >
-            <span>Next</span>
-            <ChevronRight className="w-4 h-4 text-slate-950" />
-          </button>
-        </div>
-      </div>
-
-      {/* ACTIVE REPORT CARD VIEW CONTAINER */}
-      {activeCard && student && school ? (
+      {/* SINGLE REPORT CARD VIEW */}
+      {viewMode === 'single' && activeCard && student && school ? (
         <div className="bg-white rounded-2xl border-2 border-slate-900 p-8 shadow-xl max-w-4xl mx-auto text-slate-950 print:p-0 print:border-none print:shadow-none relative">
           {/* Quick Action Top Right Floating Pill */}
           <div className="absolute top-4 right-4 flex items-center gap-2 print:hidden">
@@ -840,7 +860,7 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
             </div>
           </div>
         </div>
-      ) : (
+      ) : viewMode === 'single' && (
         <div className="bg-white p-12 text-center rounded-2xl border border-dashed border-slate-300 max-w-2xl mx-auto">
           <Award className="w-12 h-12 text-orange-600/40 mx-auto mb-3" />
           <h3 className="font-bold text-base text-slate-800">No Report Card Generated Yet</h3>
@@ -853,6 +873,149 @@ export const ReportCardsView: React.FC<ReportCardsViewProps> = ({
           >
             Generate Report Card Now
           </button>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* VIEW ALL REPORT CARDS TABLE */}
+      {/* ========================================================================= */}
+      {viewMode === 'all' && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          {/* Table header with search, filters and actions */}
+          <div className="p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h3 className="text-base font-bold text-slate-900">All Report Cards in Database</h3>
+              <span className="text-xs text-slate-500">{filteredAllCards.length} of {reportCards.length} Cards</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search by name, admission, school..."
+                  value={allSearch}
+                  onChange={e => setAllSearch(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-500 w-48"
+                />
+              </div>
+              {/* Session Filter */}
+              <select
+                value={allSessionFilter}
+                onChange={e => setAllSessionFilter(e.target.value)}
+                className="px-2 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="ALL">All Sessions</option>
+                {sessions.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              {/* Term Filter */}
+              <select
+                value={allTermFilter}
+                onChange={e => setAllTermFilter(e.target.value)}
+                className="px-2 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500"
+              >
+                <option value="ALL">All Terms</option>
+                {terms.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+              {/* Delete Selected button (super-admin only) */}
+              {currentUser.role === 'super-admin' && selectedCardIds.size > 0 && (
+                <button
+                  onClick={handleBulkDelete}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition-colors shadow-sm"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete Selected ({selectedCardIds.size})
+                </button>
+              )}
+              {selectedCardIds.size > 0 && (
+                <button
+                  onClick={() => setSelectedCardIds(new Set())}
+                  className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700 font-medium"
+                >
+                  Clear Selection
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                <tr>
+                  <th className="py-3 px-4 w-10">
+                    <input
+                      type="checkbox"
+                      checked={filteredAllCards.length > 0 && filteredAllCards.every(c => selectedCardIds.has(c.id))}
+                      onChange={(e) => toggleAllCards(e.target.checked)}
+                      className="w-4 h-4 rounded text-orange-600 focus:ring-orange-500 cursor-pointer"
+                    />
+                  </th>
+                  <th className="py-3 px-4">Student</th>
+                  <th className="py-3 px-4">School</th>
+                  <th className="py-3 px-4">Admission No</th>
+                  <th className="py-3 px-4">Class</th>
+                  <th className="py-3 px-4">Academic Session</th>
+                  <th className="py-3 px-4">Term</th>
+                  <th className="py-3 px-4">Average (%)</th>
+                  <th className="py-3 px-4">Position</th>
+                  <th className="py-3 px-4 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-medium text-slate-800">
+                {filteredAllCards.length === 0 ? (
+                  <tr>
+                    <td colSpan={10} className="py-8 text-center text-slate-400">
+                      No report cards match your filters.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredAllCards.map(card => {
+                    const student = students.find(s => s.id === card.student_id);
+                    const school = schools.find(s => s.id === card.school_id);
+                    const cls = classes.find(c => c.id === card.class_id);
+                    const session = sessions.find(s => s.id === card.session_id);
+                    const term = terms.find(t => t.id === card.term_id);
+                    return (
+                      <tr key={card.id} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="py-3 px-4">
+                          <input
+                            type="checkbox"
+                            checked={selectedCardIds.has(card.id)}
+                            onChange={() => toggleCardSelection(card.id)}
+                            className="w-4 h-4 rounded text-orange-600 focus:ring-orange-500 cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-3 px-4 font-bold text-slate-900">{student?.full_name || 'Unknown'}</td>
+                        <td className="py-3 px-4 text-slate-600">{school?.name || '—'}</td>
+                        <td className="py-3 px-4 font-mono text-slate-500">{student?.admission_number || '—'}</td>
+                        <td className="py-3 px-4">{cls?.name || '—'}</td>
+                        <td className="py-3 px-4">{session?.name || '—'}</td>
+                        <td className="py-3 px-4">{term?.name || '—'}</td>
+                        <td className="py-3 px-4 font-black text-orange-600">{card.average_percent.toFixed(1)}%</td>
+                        <td className="py-3 px-4 font-bold text-slate-900">{card.position}</td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            onClick={() => {
+                              setSelectedStudentId(card.student_id);
+                              setSelectedSessionId(card.session_id);
+                              setSelectedTermId(card.term_id);
+                              setViewMode('single');
+                            }}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg text-xs transition-colors cursor-pointer shadow-xs"
+                          >
+                            Open Report Card
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

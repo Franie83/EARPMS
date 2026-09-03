@@ -810,13 +810,14 @@ class Store {
     return newExam;
   }
 
+  // FIXED: Super-Admin can edit any examination (including finalized)
   public updateExamination(id: string, updates: Partial<Examination>): { success: boolean; message: string; examination?: Examination } {
     if (this.state.currentUser.role !== 'super-admin') {
       return { success: false, message: 'Permission Denied: Only Super-Admin can edit examinations.' };
     }
     const exam = this.state.examinations.find(e => e.id === id);
     if (!exam) return { success: false, message: 'Examination not found.' };
-    if (exam.status === 'finalized') return { success: false, message: 'Finalized examinations are immutable.' };
+    // Removed the finalized check – Super-Admin can edit even finalized exams.
     const old = { ...exam };
     Object.assign(exam, updates, { id });
     if (exam.question_paper_mode === 'variable') {
@@ -1992,26 +1993,61 @@ class Store {
     return { success: true, message: `Script successfully finalized by examiner with total score: ${total}/${exam.maximum_marks}.` };
   }
 
-  // Result Finalization & Competition Ranking Gate
-  public finalizeExaminationResults(examId: string): { success: boolean; message: string; resultsCount: number } {
+  // ==========================================
+  // RESULT FINALIZATION & COMPETITION RANKING GATE
+  // ==========================================
+  public finalizeExaminationResults(
+    examId: string,
+    force: boolean = false
+  ): { success: boolean; message: string; resultsCount: number } {
     const exam = this.state.examinations.find(e => e.id === examId);
     if (!exam) return { success: false, message: 'Exam not found.', resultsCount: 0 };
+
+    if (!['approved', 'finalized'].includes(exam.status)) {
+      return { success: false, message: 'Examination must be approved by the Principal before results can be finalized.', resultsCount: 0 };
+    }
 
     const papers = this.state.studentPapers.filter(p => p.examination_id === examId);
     const scripts = this.state.answerScripts.filter(s => s.examination_id === examId);
 
-    // Every enrolled/generated paper must have an examiner-approved script before
-    // the examination can be finalized.
+    // Find missing papers (no script at all)
     const missingScripts = papers.filter(p => !scripts.some(s => s.paper_id === p.id));
-    const unapproved = scripts.filter(s => s.review_status !== 'examiner_approved');
-    if (missingScripts.length > 0 || unapproved.length > 0) {
-      const details = [
-        missingScripts.length ? `${missingScripts.length} candidate paper(s) have no marked script` : '',
-        unapproved.length ? `${unapproved.length} script(s) are not examiner-approved` : ''
-      ].filter(Boolean).join('; ');
+
+    // If force is true, create placeholder scripts for missing papers
+    if (force && missingScripts.length > 0) {
+      for (const paper of missingScripts) {
+        const script: AnswerScript = {
+          id: `scr-force-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+          paper_id: paper.id,
+          examination_id: examId,
+          student_id: paper.student_id,
+          intake_type: 'manual_entry',
+          status: 'marked',
+          review_status: 'examiner_approved',
+          score: 0,
+          maximum_marks: exam.maximum_marks,
+          answers: [],
+          created_at: new Date().toISOString(),
+          finalized_at: new Date().toISOString(),
+          finalized_by: 'System (Force Finalize)'
+        };
+        this.state.answerScripts.push(script);
+      }
+      // Refresh scripts list after adding placeholders
+      scripts.push(...this.state.answerScripts.filter(s => s.examination_id === examId));
+    }
+
+    const pendingScripts = scripts.filter(s => s.review_status !== 'examiner_approved');
+    if (pendingScripts.length > 0) {
+      return { success: false, message: `${pendingScripts.length} answer script(s) are still pending examiner moderation.`, resultsCount: 0 };
+    }
+
+    // After potential creation, re-check for still missing scripts
+    const stillMissing = papers.filter(p => !scripts.some(s => s.paper_id === p.id));
+    if (stillMissing.length > 0) {
       return {
         success: false,
-        message: `${details}. All candidate scripts must be moderated before finalization.`,
+        message: `${stillMissing.length} candidate paper(s) still have no script. Use force=true to auto-create zero-score scripts.`,
         resultsCount: 0
       };
     }
@@ -2094,8 +2130,18 @@ class Store {
       actor: this.state.currentUser.username,
       source: 'examiner-finalized-answer-scores'
     });
+
+    // ---- 🔥 AUTO-GENERATE REPORT CARDS FOR THIS SESSION/TERM ----
+    const seedResult = this.seedAllReportCards(exam.session_id, exam.term_id);
+    // Append report card count to the message
+    const cardMsg = seedResult.count > 0 ? ` (${seedResult.count} report card(s) generated/refreshed automatically).` : ' (No report cards generated – ensure students have finalized results).';
     this.save();
-    return { success: true, message: `${examResults.length} candidate results finalized with standard competition tie rankings.`, resultsCount: examResults.length };
+
+    return {
+      success: true,
+      message: `${examResults.length} candidate results finalized with standard competition tie rankings.${cardMsg}`,
+      resultsCount: examResults.length
+    };
   }
 
   // Bulk finalization for all eligible examination results in one operation.
@@ -2138,6 +2184,37 @@ class Store {
       finalizedCount,
       skippedCount
     };
+  }
+
+  // ==========================================
+  // RECALCULATE RESULT PERCENTAGES (NEW)
+  // ==========================================
+  public recalculateResultPercentages(examId: string): { success: boolean; message: string; count: number } {
+    const exam = this.state.examinations.find(e => e.id === examId);
+    if (!exam) return { success: false, message: 'Examination not found.', count: 0 };
+
+    const results = this.state.results.filter(r => r.examination_id === examId);
+    if (!results.length) return { success: false, message: 'No results found for this examination.', count: 0 };
+
+    const scales = this.state.gradeScales;
+    let updated = 0;
+    for (const result of results) {
+      const maxMarks = exam.maximum_marks;
+      if (maxMarks <= 0) continue;
+      const percentage = (result.raw_marks / maxMarks) * 100;
+      result.percentage = parseFloat(percentage.toFixed(2));
+      result.maximum_marks = maxMarks;
+      const grade = gradeForPercentage(result.percentage, scales);
+      if (grade) result.grade = grade;
+      updated++;
+    }
+
+    if (updated > 0) {
+      this.recordAudit('UPDATE', 'result-recalculation', examId, undefined, { updated, exam_max: exam.maximum_marks });
+      this.save();
+    }
+
+    return { success: true, message: `Updated ${updated} result records to use exam maximum of ${exam.maximum_marks} marks.`, count: updated };
   }
 
   // Recalculate persisted report-card class positions from finalized results.
@@ -2202,7 +2279,9 @@ class Store {
     return { success: true, count: cards.length };
   }
 
-  // Report Card Generation & QR Verification
+  // ==========================================
+  // REPORT CARD GENERATION & QR VERIFICATION
+  // ==========================================
   public generateReportCard(studentId: string, sessionId: string, termId: string): { success: boolean; message: string; reportCard?: ReportCard } {
     const student = this.state.students.find(s => s.id === studentId);
     if (!student) return { success: false, message: 'Student not found.' };
@@ -2226,13 +2305,14 @@ class Store {
       const scale = this.state.gradeScales.find(g => r.percentage >= g.min_percent && r.percentage <= g.max_percent);
 
       totalRaw += r.raw_marks;
-      totalMax += r.maximum_marks;
+      // Use the exam's maximum marks to avoid mismatch
+      totalMax += ex.maximum_marks;
 
       subjects.push({
         subject_name: sub ? sub.name : ex.title,
         subject_code: sub ? sub.code : ex.code,
         raw_marks: r.raw_marks,
-        max_marks: r.maximum_marks,
+        max_marks: ex.maximum_marks, // Use exam max
         percentage: r.percentage,
         grade: r.grade,
         remark: scale ? scale.remark : 'Passed',
@@ -2405,7 +2485,9 @@ class Store {
     return { success: true, message: 'Report card deleted from active records.' };
   }
 
-  // Student Management & Registry Methods
+  // ==========================================
+  // STUDENT MANAGEMENT & REGISTRY METHODS
+  // ==========================================
   public updateStudent(
     studentId: string,
     updates: Partial<Student>
@@ -2880,14 +2962,19 @@ class Store {
     }
   }
 
-  // Generate/refresh report cards only from real finalized results.
-  // No benchmark report-card records are injected.
-  public seedAllReportCards(): { success: boolean; message: string; count: number } {
-    const activeSession = this.state.sessions.find(s => s.is_active) || this.state.sessions[0];
-    const activeTerm = activeSession
-      ? (this.state.terms.find(t => t.session_id === activeSession.id && t.is_active) ||
-         this.state.terms.find(t => t.session_id === activeSession.id))
-      : undefined;
+  // ==========================================
+  // SEED ALL REPORT CARDS (with optional session/term)
+  // ==========================================
+  public seedAllReportCards(sessionId?: string, termId?: string): { success: boolean; message: string; count: number } {
+    const activeSession = sessionId
+      ? this.state.sessions.find(s => s.id === sessionId)
+      : (this.state.sessions.find(s => s.is_active) || this.state.sessions[0]);
+    const activeTerm = termId
+      ? this.state.terms.find(t => t.id === termId)
+      : (activeSession
+          ? (this.state.terms.find(t => t.session_id === activeSession.id && t.is_active) ||
+             this.state.terms.find(t => t.session_id === activeSession.id))
+          : undefined);
 
     if (!activeSession || !activeTerm) {
       return { success: false, message: 'No academic session/term is configured. Create one before generating report cards.', count: 0 };
@@ -2910,7 +2997,6 @@ class Store {
       if (result.success) refreshed++;
     }
 
-    // generateReportCard calculates positions from the complete finalized cohort.
     this.refreshReportCardRankings(activeSession.id, activeTerm.id);
 
     return {
@@ -2920,7 +3006,9 @@ class Store {
     };
   }
 
-    // Super-Admin Safe Business Data Management
+  // ==========================================
+  // SUPER-ADMIN SAFE BUSINESS DATA MANAGEMENT
+  // ==========================================
   public deleteRecord(entity: string, id: string): { success: boolean; message: string } {
     const user = this.state.currentUser;
     const isSuper = user.role === 'super-admin';

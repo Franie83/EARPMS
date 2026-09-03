@@ -632,7 +632,8 @@ export const ExaminationsView: React.FC<ExaminationsViewProps> = ({
                   </span>
                 </div>
                 <h3 className="text-xl font-bold text-white tracking-tight">{selectedExam.title}</h3>
-                {isSuperAdmin && selectedExam.status !== 'finalized' && (
+                {/* EDIT BUTTON - ALWAYS VISIBLE FOR SUPER-ADMIN */}
+                {isSuperAdmin && (
                   <button
                     type="button"
                     onClick={() => {
@@ -658,29 +659,29 @@ export const ExaminationsView: React.FC<ExaminationsViewProps> = ({
                   </button>
                 )}
                 {isSuperAdmin && (
-  <button
-    type="button"
-    onClick={() => {
-      let warning = `Delete "${selectedExam.title}"? This will permanently remove:\n`;
-      warning += `- All questions, marking schemes, rubrics, candidate papers, answer scripts, and results.\n`;
-      const hasFinalized = store.getState().results.some(r => r.examination_id === selectedExam.id && r.status === 'finalized');
-      if (hasFinalized) {
-        warning += `\n⚠️ WARNING: This examination has FINALIZED RESULTS. Deleting it will permanently erase them.\n`;
-        warning += `This action is irreversible. Only Super Admin can delete finalized exams.`;
-      }
-      if (!confirm(warning)) return;
-      const res = store.deleteRecord('examination', selectedExam.id);
-      alert(res.message);
-      if (res.success) {
-        setSelectedExamId('');
-        onRefresh();
-      }
-    }}
-    className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-black"
-  >
-    <Trash2 className="w-3.5 h-3.5" /> Delete Examination
-  </button>
-)}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      let warning = `Delete "${selectedExam.title}"? This will permanently remove:\n`;
+                      warning += `- All questions, marking schemes, rubrics, candidate papers, answer scripts, and results.\n`;
+                      const hasFinalized = store.getState().results.some(r => r.examination_id === selectedExam.id && r.status === 'finalized');
+                      if (hasFinalized) {
+                        warning += `\n⚠️ WARNING: This examination has FINALIZED RESULTS. Deleting it will permanently erase them.\n`;
+                        warning += `This action is irreversible. Only Super Admin can delete finalized exams.`;
+                      }
+                      if (!confirm(warning)) return;
+                      const res = store.deleteRecord('examination', selectedExam.id);
+                      alert(res.message);
+                      if (res.success) {
+                        setSelectedExamId('');
+                        onRefresh();
+                      }
+                    }}
+                    className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-black"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete Examination
+                  </button>
+                )}
               </div>
 
               <div className="flex items-center gap-6 text-xs bg-slate-800/80 px-4 py-2 rounded-xl border border-slate-700">
@@ -1453,19 +1454,19 @@ export const ExaminationsView: React.FC<ExaminationsViewProps> = ({
                   </button>
 
                   <button
-  type="button"
-  onClick={() => {
-    setSelectedEnrollmentClassId(selectedExam.class_id); // set default to exam's class
-    const eligible = students.filter(st => st.status === 'active' && st.class_id === selectedExam.class_id && (!selectedExam.school_id || st.school_id === selectedExam.school_id) && !examPapers.some(p => p.student_id === st.id));
-    setSelectedEnrollmentIds(eligible.map(st => st.id));
-    setEnrollmentMode('class');
-    setShowEnrollStudentsModal(true);
-  }}
-  className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
->
-  <UserPlus className="w-4 h-4" />
-  <span>Enroll Existing Students in Bulk</span>
-</button>
+                    type="button"
+                    onClick={() => {
+                      setSelectedEnrollmentClassId(selectedExam.class_id); // set default to exam's class
+                      const eligible = students.filter(st => st.status === 'active' && st.class_id === selectedExam.class_id && (!selectedExam.school_id || st.school_id === selectedExam.school_id) && !examPapers.some(p => p.student_id === st.id));
+                      setSelectedEnrollmentIds(eligible.map(st => st.id));
+                      setEnrollmentMode('class');
+                      setShowEnrollStudentsModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Enroll Existing Students in Bulk</span>
+                  </button>
 
                   <button
                     onClick={handleGeneratePapers}
@@ -1573,122 +1574,122 @@ export const ExaminationsView: React.FC<ExaminationsViewProps> = ({
       )}
 
       {showEnrollStudentsModal && selectedExam && (
-  <div className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4">
-    <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
-      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-        <div>
-          <h3 className="font-bold text-base text-slate-900">Bulk Enroll Existing Students</h3>
-          <p className="text-xs text-slate-500">Select existing active students from any class to enroll in this examination. Candidate papers will be created only for selected students.</p>
-        </div>
-        <button type="button" onClick={() => setShowEnrollStudentsModal(false)} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
-      </div>
-
-      {/* Class Selector */}
-      <div>
-        <label className="block text-xs font-bold text-slate-700 mb-1">Select Class to Enroll From:</label>
-        <select
-          value={selectedEnrollmentClassId || selectedExam.class_id}
-          onChange={(e) => {
-            const newClassId = e.target.value;
-            setSelectedEnrollmentClassId(newClassId);
-            // Reset selection and mode to class when class changes
-            setEnrollmentMode('class');
-            const eligible = students.filter(st => 
-              st.status === 'active' && 
-              st.class_id === newClassId && 
-              (!selectedExam.school_id || st.school_id === selectedExam.school_id) && 
-              !examPapers.some(p => p.student_id === st.id)
-            );
-            setSelectedEnrollmentIds(eligible.map(st => st.id));
-          }}
-          className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
-        >
-          {classes.map(c => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </div>
-
-      {(() => {
-        // Compute eligible based on selected class
-        const classId = selectedEnrollmentClassId || selectedExam.class_id;
-        const eligible = students.filter(st => 
-          st.status === 'active' && 
-          st.class_id === classId && 
-          (!selectedExam.school_id || st.school_id === selectedExam.school_id) && 
-          !examPapers.some(p => p.student_id === st.id)
-        );
-        const allClassIds = eligible.map(st => st.id);
-        const effectiveSelection = enrollmentMode === 'class' ? allClassIds : selectedEnrollmentIds;
-        return (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-2">
-              <button 
-                type="button" 
-                onClick={() => { setEnrollmentMode('class'); setSelectedEnrollmentIds(allClassIds); }} 
-                className={`p-3 rounded-xl border text-left ${enrollmentMode === 'class' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white'}`}
-              >
-                <div className="text-xs font-black text-slate-900">Entire Class</div>
-                <div className="text-[10px] text-slate-500 mt-1">Enroll all {eligible.length} eligible pupils in {classes.find(c => c.id === classId)?.name || 'this class'}.</div>
-              </button>
-              <button 
-                type="button" 
-                onClick={() => { setEnrollmentMode('individual'); setSelectedEnrollmentIds(selectedEnrollmentIds); }} 
-                className={`p-3 rounded-xl border text-left ${enrollmentMode === 'individual' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 bg-white'}`}
-              >
-                <div className="text-xs font-black text-slate-900">Select Pupils</div>
-                <div className="text-[10px] text-slate-500 mt-1">Choose individual pupils from the same class.</div>
-              </button>
-            </div>
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-bold text-slate-700">{effectiveSelection.length} selected / {eligible.length} eligible</span>
-              {enrollmentMode === 'individual' && <button type="button" className="text-emerald-700 font-bold" onClick={() => setSelectedEnrollmentIds(selectedEnrollmentIds.length === eligible.length ? [] : allClassIds)}>{selectedEnrollmentIds.length === eligible.length ? 'Clear all' : 'Select all'}</button>}
-            </div>
-            {enrollmentMode === 'individual' && (
-              <div className="border border-slate-200 rounded-xl divide-y max-h-80 overflow-y-auto">
-                {eligible.map(st => 
-                  <label key={st.id} className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer">
-                    <input type="checkbox" checked={selectedEnrollmentIds.includes(st.id)} onChange={() => setSelectedEnrollmentIds(prev => prev.includes(st.id) ? prev.filter(id => id !== st.id) : [...prev, st.id])} />
-                    <span className="font-bold text-sm text-slate-900">{st.full_name}</span>
-                    <span className="font-mono text-[11px] text-slate-500 ml-auto">{st.admission_number}</span>
-                  </label>
-                )}
+        <div className="fixed inset-0 bg-slate-950/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div>
+                <h3 className="font-bold text-base text-slate-900">Bulk Enroll Existing Students</h3>
+                <p className="text-xs text-slate-500">Select existing active students from any class to enroll in this examination. Candidate papers will be created only for selected students.</p>
               </div>
-            )}
-            {eligible.length === 0 && <div className="p-8 text-center text-xs text-slate-500 border border-dashed border-slate-300 rounded-xl">No eligible active students found in this class.</div>}
-          </div>
-        );
-      })()}
+              <button type="button" onClick={() => setShowEnrollStudentsModal(false)} className="text-slate-400 hover:text-slate-700"><X className="w-5 h-5" /></button>
+            </div>
 
-      <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
-        <button type="button" onClick={() => setShowEnrollStudentsModal(false)} className="px-4 py-2 bg-slate-200 text-slate-700 font-bold rounded-xl text-xs">Cancel</button>
-        <button 
-          type="button" 
-          disabled={!selectedEnrollmentIds.length} 
-          onClick={() => {
-            const classId = selectedEnrollmentClassId || selectedExam.class_id;
-            const ids = enrollmentMode === 'class' 
-              ? students.filter(st => st.status === 'active' && st.class_id === classId && (!selectedExam.school_id || st.school_id === selectedExam.school_id) && !examPapers.some(p => p.student_id === st.id)).map(st => st.id) 
-              : selectedEnrollmentIds;
-            if (!ids.length) return;
-            const res = store.bulkEnrollStudentsInExam(selectedExam.id, ids);
-            alert(res.message);
-            if (res.success) { 
-              setShowEnrollStudentsModal(false); 
-              setSelectedEnrollmentIds([]); 
-              setEnrollmentMode('class'); 
-              setSelectedEnrollmentClassId(selectedExam.class_id);
-              onRefresh(); 
-            }
-          }} 
-          className="px-5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs"
-        >
-          Enroll {selectedEnrollmentIds.length} Students
-        </button>
-      </div>
-    </div>
-  </div>
-)}
+            {/* Class Selector */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Select Class to Enroll From:</label>
+              <select
+                value={selectedEnrollmentClassId || selectedExam.class_id}
+                onChange={(e) => {
+                  const newClassId = e.target.value;
+                  setSelectedEnrollmentClassId(newClassId);
+                  // Reset selection and mode to class when class changes
+                  setEnrollmentMode('class');
+                  const eligible = students.filter(st => 
+                    st.status === 'active' && 
+                    st.class_id === newClassId && 
+                    (!selectedExam.school_id || st.school_id === selectedExam.school_id) && 
+                    !examPapers.some(p => p.student_id === st.id)
+                  );
+                  setSelectedEnrollmentIds(eligible.map(st => st.id));
+                }}
+                className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+              >
+                {classes.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {(() => {
+              // Compute eligible based on selected class
+              const classId = selectedEnrollmentClassId || selectedExam.class_id;
+              const eligible = students.filter(st => 
+                st.status === 'active' && 
+                st.class_id === classId && 
+                (!selectedExam.school_id || st.school_id === selectedExam.school_id) && 
+                !examPapers.some(p => p.student_id === st.id)
+              );
+              const allClassIds = eligible.map(st => st.id);
+              const effectiveSelection = enrollmentMode === 'class' ? allClassIds : selectedEnrollmentIds;
+              return (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      type="button" 
+                      onClick={() => { setEnrollmentMode('class'); setSelectedEnrollmentIds(allClassIds); }} 
+                      className={`p-3 rounded-xl border text-left ${enrollmentMode === 'class' ? 'border-emerald-500 bg-emerald-50' : 'border-slate-200 bg-white'}`}
+                    >
+                      <div className="text-xs font-black text-slate-900">Entire Class</div>
+                      <div className="text-[10px] text-slate-500 mt-1">Enroll all {eligible.length} eligible pupils in {classes.find(c => c.id === classId)?.name || 'this class'}.</div>
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => { setEnrollmentMode('individual'); setSelectedEnrollmentIds(selectedEnrollmentIds); }} 
+                      className={`p-3 rounded-xl border text-left ${enrollmentMode === 'individual' ? 'border-amber-500 bg-amber-50' : 'border-slate-200 bg-white'}`}
+                    >
+                      <div className="text-xs font-black text-slate-900">Select Pupils</div>
+                      <div className="text-[10px] text-slate-500 mt-1">Choose individual pupils from the same class.</div>
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700">{effectiveSelection.length} selected / {eligible.length} eligible</span>
+                    {enrollmentMode === 'individual' && <button type="button" className="text-emerald-700 font-bold" onClick={() => setSelectedEnrollmentIds(selectedEnrollmentIds.length === eligible.length ? [] : allClassIds)}>{selectedEnrollmentIds.length === eligible.length ? 'Clear all' : 'Select all'}</button>}
+                  </div>
+                  {enrollmentMode === 'individual' && (
+                    <div className="border border-slate-200 rounded-xl divide-y max-h-80 overflow-y-auto">
+                      {eligible.map(st => 
+                        <label key={st.id} className="flex items-center gap-3 p-3 hover:bg-slate-50 cursor-pointer">
+                          <input type="checkbox" checked={selectedEnrollmentIds.includes(st.id)} onChange={() => setSelectedEnrollmentIds(prev => prev.includes(st.id) ? prev.filter(id => id !== st.id) : [...prev, st.id])} />
+                          <span className="font-bold text-sm text-slate-900">{st.full_name}</span>
+                          <span className="font-mono text-[11px] text-slate-500 ml-auto">{st.admission_number}</span>
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  {eligible.length === 0 && <div className="p-8 text-center text-xs text-slate-500 border border-dashed border-slate-300 rounded-xl">No eligible active students found in this class.</div>}
+                </div>
+              );
+            })()}
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
+              <button type="button" onClick={() => setShowEnrollStudentsModal(false)} className="px-4 py-2 bg-slate-200 text-slate-700 font-bold rounded-xl text-xs">Cancel</button>
+              <button 
+                type="button" 
+                disabled={!selectedEnrollmentIds.length} 
+                onClick={() => {
+                  const classId = selectedEnrollmentClassId || selectedExam.class_id;
+                  const ids = enrollmentMode === 'class' 
+                    ? students.filter(st => st.status === 'active' && st.class_id === classId && (!selectedExam.school_id || st.school_id === selectedExam.school_id) && !examPapers.some(p => p.student_id === st.id)).map(st => st.id) 
+                    : selectedEnrollmentIds;
+                  if (!ids.length) return;
+                  const res = store.bulkEnrollStudentsInExam(selectedExam.id, ids);
+                  alert(res.message);
+                  if (res.success) { 
+                    setShowEnrollStudentsModal(false); 
+                    setSelectedEnrollmentIds([]); 
+                    setEnrollmentMode('class'); 
+                    setSelectedEnrollmentClassId(selectedExam.class_id);
+                    onRefresh(); 
+                  }
+                }} 
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs"
+              >
+                Enroll {selectedEnrollmentIds.length} Students
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Bulk Add Questions Modal */}
       {showBulkAddModal && selectedExam && (
         <BulkAddQuestionsModal
